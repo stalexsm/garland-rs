@@ -59,6 +59,8 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
 
+Spawn both with the `reviewer` subagent profile — it is this environment's code-diff review agent; do not guess agent names.
+
 **Standards sub-agent prompt** should include:
 
 - The full diff command and commit list.
