@@ -22,6 +22,9 @@ esp-backtrace = { version = "0.20.0", features = [
 ] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c6", "log-04"] }
 esp-hal = { version = "~1.2.2", features = ["esp32c6", "log-04", "unstable"] }
+# Драйвер Ленты: RMT-TX адаптер smart-leds с таймингами WS2812B (порядок GRB);
+# RMT в esp-hal 1.x нестабилен, потому у esp-hal включена feature `unstable`.
+esp-hal-smartled = "0.18.0"
 esp-println = { version = "0.18.0", features = ["esp32c6", "log-04"] }
 esp-rtos = { version = "0.4.0", features = [
   "embassy",
@@ -29,4 +32,7 @@ esp-rtos = { version = "0.4.0", features = [
   "esp32c6",
   "log-04",
 ] }
+# Тип RGB8 и трейт SmartLedsWriteAsync для драйвера; версия — из
+# dev-dependencies самого esp-hal-smartled 0.18.
+smart-leds = "0.4"
 log.workspace = true

@@ -1,5 +1,5 @@
 fn main() {
-    matrix_build_config();
+    build_config();
     // Линкерные скрипты esp-hal — только под target прошивки; на хосте они
     // ломают сборку обычным cc.
     if is_firmware_target() {
@@ -15,19 +15,27 @@ fn is_firmware_target() -> bool {
         .unwrap_or(false)
 }
 
-// Параметры Матрицы фиксируются на этапе сборки переменными окружения;
+// Параметры фиксируются на этапе сборки переменными окружения;
 // дефолты — Стенд 8×8, змейка по горизонтальным рядам, старт в левом верхнем углу.
 const DEFAULT_MATRIX_W: &str = "8";
 const DEFAULT_MATRIX_H: &str = "8";
 const DEFAULT_LAYOUT: &str = "serpentine-rows";
 const DEFAULT_START_CORNER: &str = "top-left";
+const DEFAULT_LED_PIN: &str = "10";
+const DEFAULT_MAX_BRIGHTNESS: &str = "64";
+const DEFAULT_TEST_GRID_SECS: &str = "8";
+const DEFAULT_DRIVER_GATE: &str = "0";
 
-fn matrix_build_config() {
+fn build_config() {
     for (name, default) in [
         ("MATRIX_W", DEFAULT_MATRIX_W),
         ("MATRIX_H", DEFAULT_MATRIX_H),
         ("LAYOUT", DEFAULT_LAYOUT),
         ("START_CORNER", DEFAULT_START_CORNER),
+        ("LED_PIN", DEFAULT_LED_PIN),
+        ("MAX_BRIGHTNESS", DEFAULT_MAX_BRIGHTNESS),
+        ("TEST_GRID_SECS", DEFAULT_TEST_GRID_SECS),
+        ("DRIVER_GATE", DEFAULT_DRIVER_GATE),
     ] {
         let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
         println!("cargo:rustc-env={name}={value}");
