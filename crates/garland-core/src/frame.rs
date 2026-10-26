@@ -6,6 +6,7 @@
 //! прошивки статические.
 
 use crate::color::Rgb8;
+use crate::mapping::Mapping;
 
 /// Фреймбуфер: логическая Матрица `w`×`h` поверх среза Пикселей.
 #[derive(Debug)]
@@ -71,6 +72,17 @@ impl<'a> Frame<'a> {
         self.pixels.fill(c);
     }
 
+    /// Записать цвет в Пиксель, стоящий на Ленте под номером `index`, — обход
+    /// «по проводу»: Пиксели нумеруются в физическом порядке Привязки
+    /// `mapping` (змейка, стартовый угол), а не строка-мажорно. Паникует при
+    /// `index` вне Ленты. 1D-Эффекты пишут Кадр только через этот метод:
+    /// Привязку им передаёт Прошивка, арифметику по координатам они
+    /// не выполняют сами.
+    pub fn set_wire(&mut self, mapping: &Mapping, index: usize, c: Rgb8) {
+        let (x, y) = mapping.coord(index);
+        self.set(x, y, c);
+    }
+
     /// Пиксели Фреймбуфера в логическом порядке (строка-мажор, без змейки).
     pub fn pixels(&self) -> &[Rgb8] {
         self.pixels
@@ -80,6 +92,7 @@ impl<'a> Frame<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mapping::{Corner, Layout};
 
     const W: u16 = 4;
     const H: u16 = 3;
@@ -148,6 +161,31 @@ mod tests {
         frame.set(W, 0, red);
         frame.set(0, H, red);
         assert_eq!(frame.pixels(), &[Rgb8::BLACK; 12]);
+    }
+
+    /// Вид «по проводу»: `set_wire` кладёт цвет в Пиксель по индексу Ленты,
+    /// а не строка-мажно: на змейке 4×3 Пиксель Ленты 5 стоит в (2, 1),
+    /// тогда как строка-мажорный индекс 5 — это (1, 1).
+    #[test]
+    fn set_wire_follows_strip_order() {
+        let mapping = Mapping::new(W, H, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 12];
+        let mut frame = Frame::new(W, H, &mut buffer).unwrap();
+
+        let green = Rgb8 { r: 0, g: 255, b: 0 };
+        frame.set_wire(&mapping, 5, green);
+        assert_eq!(frame.get(1, 1), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(2, 1), Some(green));
+    }
+
+    /// Индекс вне Ленты в обходе «по проводу» паникует — как [`Mapping::coord`].
+    #[test]
+    #[should_panic(expected = "вне Ленты")]
+    fn set_wire_out_of_strip_panics() {
+        let mapping = Mapping::new(W, H, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 12];
+        let mut frame = Frame::new(W, H, &mut buffer).unwrap();
+        frame.set_wire(&mapping, 12, Rgb8::BLACK);
     }
 
     #[test]
