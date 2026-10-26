@@ -315,6 +315,17 @@ mod tests {
         assert_eq!(gamma8(192), 115);
     }
 
+    /// Вся таблица сверяется с формулой round(255·(i/255)^2,8): ручные правки
+    /// константы (транскрипция, потерянные значения) ломают этот тест целиком,
+    /// а не только контрольные точки.
+    #[test]
+    fn gamma_table_matches_formula() {
+        for i in 0..=255u16 {
+            let expected = ((f64::from(i) / 255.0).powf(2.8) * 255.0).round() as u8;
+            assert_eq!(gamma8(i as u8), expected, "gamma8({i})");
+        }
+    }
+
     #[test]
     fn gamma_is_monotonic() {
         let mut prev = gamma8(0);
