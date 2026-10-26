@@ -22,6 +22,7 @@ const DEFAULT_MATRIX_H: &str = "8";
 const DEFAULT_LAYOUT: &str = "serpentine-rows";
 const DEFAULT_START_CORNER: &str = "top-left";
 const DEFAULT_LED_PIN: &str = "10";
+const DEFAULT_BUTTON_PIN: &str = "9";
 const DEFAULT_MAX_BRIGHTNESS: &str = "64";
 const DEFAULT_TEST_GRID_SECS: &str = "8";
 const DEFAULT_DRIVER_GATE: &str = "0";
@@ -33,6 +34,7 @@ fn build_config() {
         ("LAYOUT", DEFAULT_LAYOUT),
         ("START_CORNER", DEFAULT_START_CORNER),
         ("LED_PIN", DEFAULT_LED_PIN),
+        ("BUTTON_PIN", DEFAULT_BUTTON_PIN),
         ("MAX_BRIGHTNESS", DEFAULT_MAX_BRIGHTNESS),
         ("TEST_GRID_SECS", DEFAULT_TEST_GRID_SECS),
         ("DRIVER_GATE", DEFAULT_DRIVER_GATE),

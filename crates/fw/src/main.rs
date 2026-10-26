@@ -6,10 +6,13 @@
 //! 1. Тестовая сетка Раскладки (`TEST_GRID_SECS` секунд): белый бегунок идёт
 //!    по Ленте и показывает порядок змейки, красный Пиксель 0 держит
 //!    стартовый угол.
-//! 2. Дальше — статичный цвет (`STATIC_COLOR`) с потолком яркости
-//!    `MAX_BRIGHTNESS`; либо, если при сборке задан `DRIVER_GATE=1`,
-//!    непрерывный blink/breathe — железный гейт драйвера на залипания и
-//!    порчу цветов при частых обновлениях.
+//! 2. Офлайн-гирлянда: Реестр эффектов под управлением кнопки — короткое
+//!    нажатие включает следующий Эффект по кругу, длинное (~0,8 с) переводит
+//!    в Покой (чёрная Лента), короткое из Покоя возвращает Текущий эффект.
+//!    Сеть не нужна.
+//! 3. Если при сборке задан `DRIVER_GATE=1`, вместо пункта 2 — непрерывный
+//!    blink/breathe: железный гейт драйвера на залипания и порчу цветов при
+//!    частых обновлениях.
 //!
 //! Параметры задаются переменными окружения при сборке (см. `build.rs`),
 //! дефолты — Стенд 8×8:
@@ -21,9 +24,10 @@
 //! | `LAYOUT`        | `serpentine-rows`, `plain-rows`, `serpentine-cols`, `plain-cols`  | `serpentine-rows` |
 //! | `START_CORNER`  | `top-left`, `top-right`, `bottom-left`, `bottom-right`            | `top-left`        |
 //! | `LED_PIN`       | номер GPIO Ленты (ESP32-C6: 0..=30)                               | `10`              |
+//! | `BUTTON_PIN`    | номер GPIO кнопки (ESP32-C6: 0..=30; BOOT на DevKitC-1 — `9`)      | `9`               |
 //! | `MAX_BRIGHTNESS`| потолок яркости канала, 0..=255                                   | `64`              |
 //! | `TEST_GRID_SECS`| длительность тестовой сетки, секунд (0 — выключить)               | `8`               |
-//! | `DRIVER_GATE`   | `1` — после сетки непрерывный blink/breathe вместо статичного     | `0`               |
+//! | `DRIVER_GATE`   | `1` — после сетки непрерывный blink/breathe вместо гирлянды        | `0`               |
 //!
 //! Сборка и заливка — из каталога `fw` (target и runner прописаны в
 //! `.cargo/config.toml`):
@@ -50,6 +54,10 @@
 
 // На хосте модуль нужен только тестам: в bin-сборку хоста не включаем.
 #[cfg(any(test, target_arch = "riscv32"))]
+mod button;
+#[cfg(any(test, target_arch = "riscv32"))]
+mod control;
+#[cfg(any(test, target_arch = "riscv32"))]
 mod diag;
 
 // Размер кучи, байт: дефолт шаблона esp-generate; запас под Wi-Fi появится
@@ -64,6 +72,8 @@ const MATRIX_W: u16 = env_u16(env!("MATRIX_W"));
 const MATRIX_H: u16 = env_u16(env!("MATRIX_H"));
 #[cfg(target_arch = "riscv32")]
 const LED_PIN: u16 = env_u16(env!("LED_PIN"));
+#[cfg(target_arch = "riscv32")]
+const BUTTON_PIN: u16 = env_u16(env!("BUTTON_PIN"));
 #[cfg(target_arch = "riscv32")]
 const MAX_BRIGHTNESS: u8 = env_u8(env!("MAX_BRIGHTNESS"));
 #[cfg(target_arch = "riscv32")]
@@ -124,48 +134,6 @@ const fn env_bool(s: &str) -> bool {
     bytes.len() == 1 && bytes[0] == b'1'
 }
 
-/// GPIO по номеру из `LED_PIN`: типы периферии различаются по именам, поэтому
-/// номер разворачивается в поле периферии, а пин стирается до [`AnyPin`].
-#[cfg(target_arch = "riscv32")]
-macro_rules! gpio_peripheral {
-    ($p:ident, $number:expr) => {
-        match $number {
-            0 => $p.GPIO0.degrade(),
-            1 => $p.GPIO1.degrade(),
-            2 => $p.GPIO2.degrade(),
-            3 => $p.GPIO3.degrade(),
-            4 => $p.GPIO4.degrade(),
-            5 => $p.GPIO5.degrade(),
-            6 => $p.GPIO6.degrade(),
-            7 => $p.GPIO7.degrade(),
-            8 => $p.GPIO8.degrade(),
-            9 => $p.GPIO9.degrade(),
-            10 => $p.GPIO10.degrade(),
-            11 => $p.GPIO11.degrade(),
-            12 => $p.GPIO12.degrade(),
-            13 => $p.GPIO13.degrade(),
-            14 => $p.GPIO14.degrade(),
-            15 => $p.GPIO15.degrade(),
-            16 => $p.GPIO16.degrade(),
-            17 => $p.GPIO17.degrade(),
-            18 => $p.GPIO18.degrade(),
-            19 => $p.GPIO19.degrade(),
-            20 => $p.GPIO20.degrade(),
-            21 => $p.GPIO21.degrade(),
-            22 => $p.GPIO22.degrade(),
-            23 => $p.GPIO23.degrade(),
-            24 => $p.GPIO24.degrade(),
-            25 => $p.GPIO25.degrade(),
-            26 => $p.GPIO26.degrade(),
-            27 => $p.GPIO27.degrade(),
-            28 => $p.GPIO28.degrade(),
-            29 => $p.GPIO29.degrade(),
-            30 => $p.GPIO30.degrade(),
-            _ => panic!("LED_PIN: на ESP32-C6 поддерживаются GPIO0..=30"),
-        }
-    };
-}
-
 #[cfg(target_arch = "riscv32")]
 use embassy_executor::Spawner;
 #[cfg(target_arch = "riscv32")]
@@ -175,7 +143,7 @@ use esp_backtrace as _;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::clock::CpuClock;
 #[cfg(target_arch = "riscv32")]
-use esp_hal::gpio::{AnyPin, Pin as _};
+use esp_hal::gpio::{AnyPin, Input, InputConfig, Pin as _, Pull};
 #[cfg(target_arch = "riscv32")]
 use esp_hal::peripherals::RMT;
 #[cfg(target_arch = "riscv32")]
@@ -188,6 +156,10 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{AdapterError, RmtSmartLeds, WS2812B_TIMING, buffer_size, color_order};
 #[cfg(target_arch = "riscv32")]
 extern crate alloc;
+#[cfg(target_arch = "riscv32")]
+use crate::button::Button;
+#[cfg(target_arch = "riscv32")]
+use crate::control::{Garland, REGISTRY};
 #[cfg(target_arch = "riscv32")]
 use alloc::boxed::Box;
 #[cfg(target_arch = "riscv32")]
@@ -268,8 +240,9 @@ fn init_strip_driver(
 }
 
 /// Жизненный цикл Ленты: тестовая сетка Раскладки, затем гейт драйвера или
-/// статичный цвет. Отдельная embassy-задача: её фьючерс статический (bss),
-/// стек `main` не несёт ни драйвера, ни буферов кадра.
+/// офлайн-гирлянда — Реестр эффектов под управлением кнопки. Отдельная
+/// embassy-задача: её фьючерс статический (bss), стек `main` не несёт ни
+/// драйвера, ни буферов кадра.
 // large_stack_frames меряет фьючерс задачи, а embassy выделяет его статически
 // (bss), стек при работе не расходуется; ожидание (expect) этот поздний линт
 // не связывает, поэтому прицельное разрешение (allow).
@@ -279,7 +252,12 @@ fn init_strip_driver(
     reason = "фьючерс embassy-задачи выделяется статически (bss), стек не расходуется"
 )]
 #[embassy_executor::task]
-async fn strip_task(rmt_peripheral: RMT<'static>, led_pin: AnyPin<'static>, mapping: Mapping) {
+async fn strip_task(
+    rmt_peripheral: RMT<'static>,
+    led_pin: AnyPin<'static>,
+    button_pin: AnyPin<'static>,
+    mapping: Mapping,
+) {
     let mut led = init_strip_driver(rmt_peripheral, led_pin);
     let mut frame_buffer = [garland_core::Rgb8::BLACK; PIXELS];
     let mut strip_buffer = [RGB8::default(); PIXELS];
@@ -298,7 +276,8 @@ async fn strip_task(rmt_peripheral: RMT<'static>, led_pin: AnyPin<'static>, mapp
         elapsed_ms += FRAME_TICK_MS;
     }
 
-    // Фаза 2: гейт драйвера или статичный цвет.
+    // Гейт драйвера (DRIVER_GATE=1) — пункт 3 жизненного цикла: непрерывный
+    // blink/breathe вместо офлайн-гирлянды.
     if DRIVER_GATE {
         info!("Гейт драйвера: непрерывный blink/breathe, фазы по {GATE_PHASE_MS} мс");
         let mut elapsed_ms: u32 = 0;
@@ -321,14 +300,31 @@ async fn strip_task(rmt_peripheral: RMT<'static>, led_pin: AnyPin<'static>, mapp
         }
     }
 
-    info!("Статичный цвет");
-    {
-        let mut frame = next_frame!(frame_buffer);
-        frame.fill(diag::STATIC_COLOR);
-        show(led.as_mut(), &mut strip_buffer, &frame, &mapping).await;
-    }
+    // Фаза 2: офлайн-гирлянда. Кнопка замыкает Пин на землю: зажата —
+    // низкий уровень (подтяжка вверх).
+    let button_gpio = Input::new(button_pin, InputConfig::default().with_pull(Pull::Up));
+    let mut button = Button::new();
+    let mut garland = Garland::new(REGISTRY, mapping, grid_end_ms);
+    info!(
+        "Офлайн-гирлянда: эффектов в Реестре — {}, кнопка на GPIO{BUTTON_PIN}",
+        REGISTRY.len()
+    );
+    let mut now_ms = grid_end_ms;
     loop {
-        Timer::after(Duration::from_secs(IDLE_TICK_SECS)).await;
+        if let Some(event) = button.update(button_gpio.is_low(), now_ms) {
+            garland.press(event, now_ms);
+            info!(
+                "Кнопка: {event:?}; Текущий эффект — «{}»",
+                garland.effect_name()
+            );
+        }
+        let mut frame = next_frame!(frame_buffer);
+        garland.render(&mut frame, now_ms);
+        show(led.as_mut(), &mut strip_buffer, &frame, &mapping).await;
+        Timer::after(Duration::from_millis(u64::from(FRAME_TICK_MS))).await;
+        // Шкала wrapping u32 переполняется за 49 суток; арифметика машин
+        // кнопки и Гирлянды — на wrapping, переход незаметен.
+        now_ms = now_ms.wrapping_add(FRAME_TICK_MS);
     }
 }
 
@@ -342,8 +338,95 @@ async fn main(spawner: Spawner) -> ! {
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: HEAP_SIZE);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    // Периферия разбирается один раз: каждое поле одноразовое, поэтому все
+    // GPIO стираются до [`AnyPin`] одним списком, и из него по номерам из
+    // конфигурации сборки выбираются Пин Ленты и Пин кнопки.
+    let esp_hal::peripherals::Peripherals {
+        RMT,
+        TIMG0,
+        FROM_CPU_INTR0,
+        GPIO0,
+        GPIO1,
+        GPIO2,
+        GPIO3,
+        GPIO4,
+        GPIO5,
+        GPIO6,
+        GPIO7,
+        GPIO8,
+        GPIO9,
+        GPIO10,
+        GPIO11,
+        GPIO12,
+        GPIO13,
+        GPIO14,
+        GPIO15,
+        GPIO16,
+        GPIO17,
+        GPIO18,
+        GPIO19,
+        GPIO20,
+        GPIO21,
+        GPIO22,
+        GPIO23,
+        GPIO24,
+        GPIO25,
+        GPIO26,
+        GPIO27,
+        GPIO28,
+        GPIO29,
+        GPIO30,
+        ..
+    } = peripherals;
+    // Конфликт пинов ловится на сборке: оба номера известны компилятору.
+    const {
+        assert!(LED_PIN != BUTTON_PIN, "LED_PIN и BUTTON_PIN совпадают");
+    }
+    let mut pins = [
+        GPIO0.degrade(),
+        GPIO1.degrade(),
+        GPIO2.degrade(),
+        GPIO3.degrade(),
+        GPIO4.degrade(),
+        GPIO5.degrade(),
+        GPIO6.degrade(),
+        GPIO7.degrade(),
+        GPIO8.degrade(),
+        GPIO9.degrade(),
+        GPIO10.degrade(),
+        GPIO11.degrade(),
+        GPIO12.degrade(),
+        GPIO13.degrade(),
+        GPIO14.degrade(),
+        GPIO15.degrade(),
+        GPIO16.degrade(),
+        GPIO17.degrade(),
+        GPIO18.degrade(),
+        GPIO19.degrade(),
+        GPIO20.degrade(),
+        GPIO21.degrade(),
+        GPIO22.degrade(),
+        GPIO23.degrade(),
+        GPIO24.degrade(),
+        GPIO25.degrade(),
+        GPIO26.degrade(),
+        GPIO27.degrade(),
+        GPIO28.degrade(),
+        GPIO29.degrade(),
+        GPIO30.degrade(),
+    ];
+    pins.swap(0, LED_PIN as usize);
+    // Кнопка, стоявшая в слоте 0, после первого обмена лежит на месте Ленты.
+    let button_slot = if BUTTON_PIN == 0 {
+        LED_PIN as usize
+    } else {
+        BUTTON_PIN as usize
+    };
+    pins.swap(1, button_slot);
+    let [led_pin, button_pin, ..] = pins;
+
+    let timg0 = TimerGroup::new(TIMG0);
+    esp_rtos::start(timg0.timer0, FROM_CPU_INTR0);
 
     // Привязка координат — из параметров сборки; кривой конфиг падает на старте.
     let layout: Layout = env!("LAYOUT")
@@ -360,14 +443,8 @@ async fn main(spawner: Spawner) -> ! {
 
     // Жизненный цикл Ленты — отдельная задача со статическим фьючерсом,
     // стек main не несёт ни драйвера, ни буферов кадра.
-    spawner.spawn(
-        strip_task(
-            peripherals.RMT,
-            gpio_peripheral!(peripherals, LED_PIN),
-            mapping,
-        )
-        .expect("задача Ленты не поднялась"),
-    );
+    spawner
+        .spawn(strip_task(RMT, led_pin, button_pin, mapping).expect("задача Ленты не поднялась"));
 
     loop {
         Timer::after(Duration::from_secs(IDLE_TICK_SECS)).await;

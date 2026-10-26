@@ -8,6 +8,9 @@ publish = false
 
 [dependencies]
 garland-core.workspace = true
+effect-rainbow.workspace = true
+effect-solid.workspace = true
+log.workspace = true
 
 # Железные крейты — только под target прошивки; на хосте fw собирается
 # пустой заглушкой, чтобы workspace-гейты шли без железа.
@@ -35,4 +38,3 @@ esp-rtos = { version = "0.4.0", features = [
 # Тип RGB8 и трейт SmartLedsWriteAsync для драйвера; версия — из
 # dev-dependencies самого esp-hal-smartled 0.18.
 smart-leds = "0.4"
-log.workspace = true
