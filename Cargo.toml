@@ -1,0 +1,24 @@
+# Корень Rust workspace Гирлянды: все крейты живут в crates/.
+[workspace]
+resolver = "3"
+members = ["crates/fw", "crates/garland-core", "crates/effects/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace.dependencies]
+garland-core = { path = "crates/garland-core" }
+log = "0.4.34"
+
+# Профили прошивки (канон шаблона esp-generate): dev-сборка без оптимизаций
+# слишком медленная и жирная для микроконтроллера.
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1 # LLVM работает быстрее на одном потоке
+debug = 2 # медленнее сборка, но лучше отладка
+lto = "fat"
+opt-level = "s"

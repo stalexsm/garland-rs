@@ -1,0 +1,6 @@
+# Тулчейн проекта: stable + rust-src + target ESP32-C6 (RISC-V).
+# По книге esp-rs: для RISC-V espup не нужен.
+[toolchain]
+channel = "stable"
+components = ["rust-src"]
+targets = ["riscv32imac-unknown-none-elf"]
