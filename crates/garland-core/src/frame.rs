@@ -87,6 +87,11 @@ impl<'a> Frame<'a> {
     pub fn pixels(&self) -> &[Rgb8] {
         self.pixels
     }
+
+    /// Пиксели Фреймбуфера на запись, в том же порядке, что у [`Frame::pixels`].
+    pub fn pixels_mut(&mut self) -> &mut [Rgb8] {
+        self.pixels
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +191,20 @@ mod tests {
         let mut buffer = [Rgb8::BLACK; 12];
         let mut frame = Frame::new(W, H, &mut buffer).unwrap();
         frame.set_wire(&mapping, 12, Rgb8::BLACK);
+    }
+
+    /// Запись через `pixels_mut` видна через `get`: порядок общий,
+    /// строка-мажор.
+    #[test]
+    fn pixels_mut_writes_are_visible_through_get() {
+        let mut buffer = [Rgb8::BLACK; 12];
+        let mut frame = Frame::new(W, H, &mut buffer).unwrap();
+
+        let red = Rgb8 { r: 255, g: 0, b: 0 };
+        frame.pixels_mut()[W as usize + 1] = red;
+
+        assert_eq!(frame.get(1, 1), Some(red));
+        assert_eq!(frame.pixels()[W as usize + 1], red);
     }
 
     #[test]
