@@ -1,0 +1,7 @@
+# Rust
+/target
+
+# esp-idf / embuild (нужно только если используется esp-idf; чистый esp-hal это не создаёт)
+/.embuild/
+/sdkconfig
+/sdkconfig.old
