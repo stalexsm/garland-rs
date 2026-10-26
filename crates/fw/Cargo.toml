@@ -10,12 +10,20 @@ publish = false
 garland-core.workspace = true
 effect-rainbow.workspace = true
 effect-solid.workspace = true
+heapless.workspace = true
 log.workspace = true
 
 # Железные крейты — только под target прошивки; на хосте fw собирается
 # пустой заглушкой, чтобы workspace-гейты шли без железа.
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 embassy-executor = { version = "0.10.0", features = ["log"] }
+# Сетевой стек поверх Wi-Fi-драйвера esp-radio; dhcpv4-hostname даёт DHCP
+# Option 12 — имя Гирлянды в роутере.
+embassy-net = { version = "0.9.1", default-features = false, features = [
+  "dhcpv4-hostname",
+  "medium-ethernet",
+  "tcp",
+] }
 embassy-time = { version = "0.5.1", features = ["log"] }
 esp-alloc = { version = "0.11.0", features = ["esp32c6"] }
 esp-backtrace = { version = "0.20.0", features = [
@@ -29,9 +37,11 @@ esp-hal = { version = "~1.2.2", features = ["esp32c6", "log-04", "unstable"] }
 # RMT в esp-hal 1.x нестабилен, потому у esp-hal включена feature `unstable`.
 esp-hal-smartled = "0.18.0"
 esp-println = { version = "0.18.0", features = ["esp32c6", "log-04"] }
+esp-radio = { version = "1.0.0-beta.1", features = ["esp32c6", "log-04", "wifi"] }
 esp-rtos = { version = "0.4.0", features = [
   "embassy",
   "esp-alloc",
+  "esp-radio",
   "esp32c6",
   "log-04",
 ] }

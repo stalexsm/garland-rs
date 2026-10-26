@@ -14,6 +14,11 @@
 //!    blink/breathe: железный гейт драйвера на залипания и порчу цветов при
 //!    частых обновлениях.
 //!
+//! Параллельно с Лентой (когда заданы учётные данные) живёт сеть: Wi-Fi STA
+//! с авто-переподключением, DHCP с именем `garland` и HTTP-сервер, чья
+//! страница по IP Гирлянды показывает версию текущей Прошивки. Недоступная
+//! сеть не касается эффектов — задачи независимы.
+//!
 //! Параметры задаются переменными окружения при сборке (см. `build.rs`),
 //! дефолты — Стенд 8×8:
 //!
@@ -28,6 +33,8 @@
 //! | `MAX_BRIGHTNESS`| потолок яркости канала, 0..=255                                   | `64`              |
 //! | `TEST_GRID_SECS`| длительность тестовой сетки, секунд (0 — выключить)               | `8`               |
 //! | `DRIVER_GATE`   | `1` — после сетки непрерывный blink/breathe вместо гирлянды        | `0`               |
+//! | `WIFI_SSID`     | имя домашней сети (пустое — офлайн-режим без сети)                | —                 |
+//! | `WIFI_PASS`     | пароль Wi-Fi                                                      | —                 |
 //!
 //! Сборка и заливка — из каталога `fw` (target и runner прописаны в
 //! `.cargo/config.toml`):
@@ -36,6 +43,7 @@
 //! cargo build                          # Прошивка под Стенд 8×8
 //! MATRIX_W=16 cargo build              # та же Прошивка под Матрицу 16×N
 //! DRIVER_GATE=1 cargo run              # гейт драйвера: blink/breathe
+//! WIFI_SSID=HomeNet WIFI_PASS=secret cargo run   # сеть + страница версии по IP
 //! cargo run                            # сборка и заливка через espflash
 //! ```
 //!
@@ -57,13 +65,22 @@
 mod button;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod control;
+// Мини-HTTP — чистые функции, хост-тесты идут без железа.
 #[cfg(any(test, target_arch = "riscv32"))]
 mod diag;
-
-// Размер кучи, байт: дефолт шаблона esp-generate; запас под Wi-Fi появится
-// вместе с esp-radio.
+#[cfg(any(test, target_arch = "riscv32"))]
+mod http;
+// Сеть — только на железе.
 #[cfg(target_arch = "riscv32")]
-const HEAP_SIZE: usize = 65536;
+mod net;
+
+// Размер куч (конфигурация примера esp-hal для Wi-Fi, см.
+// docs/research/wifi-http.md): reclaimed-RAM — под аллокации прошивки,
+// обычный heap — под буферы Wi-Fi, которые esp-radio берёт из esp-alloc.
+#[cfg(target_arch = "riscv32")]
+const RECLAIMED_HEAP_SIZE: usize = 64 * 1024;
+#[cfg(target_arch = "riscv32")]
+const HEAP_SIZE: usize = 36 * 1024;
 
 // Параметры из окружения сборки; мусор в конфиге ломает сборку, а не старт.
 #[cfg(target_arch = "riscv32")]
@@ -80,6 +97,23 @@ const MAX_BRIGHTNESS: u8 = env_u8(env!("MAX_BRIGHTNESS"));
 const TEST_GRID_SECS: u16 = env_u16(env!("TEST_GRID_SECS"));
 #[cfg(target_arch = "riscv32")]
 const DRIVER_GATE: bool = env_bool(env!("DRIVER_GATE"));
+#[cfg(target_arch = "riscv32")]
+const WIFI_SSID: &str = env!("WIFI_SSID");
+#[cfg(target_arch = "riscv32")]
+const WIFI_PASS: &str = env!("WIFI_PASS");
+
+// Ёмкости типов esp-radio ловятся на сборке: кривой конфиг ломает сборку,
+// а не старт на устройстве.
+#[cfg(target_arch = "riscv32")]
+const _: () = {
+    assert!(WIFI_SSID.len() <= 32, "WIFI_SSID: длиннее 32 байт");
+    assert!(WIFI_PASS.len() <= 64, "WIFI_PASS: длиннее 64 байт");
+};
+
+// Сеть поднимается только с полными учётными данными: пустые значения —
+// офлайн-режим, эффекты работают без сети.
+#[cfg(target_arch = "riscv32")]
+const WIFI_CREDENTIALS_SET: bool = !WIFI_SSID.is_empty() && !WIFI_PASS.is_empty();
 
 // Число Пикселей Матрицы — размер статических буферов кадра.
 #[cfg(target_arch = "riscv32")]
@@ -148,6 +182,8 @@ use esp_hal::gpio::{AnyPin, Input, InputConfig, Pin as _, Pull};
 use esp_hal::peripherals::RMT;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::rmt::Rmt;
+#[cfg(target_arch = "riscv32")]
+use esp_hal::rng::Rng;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::time::Rate;
 #[cfg(target_arch = "riscv32")]
@@ -336,7 +372,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: HEAP_SIZE);
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: RECLAIMED_HEAP_SIZE);
+    esp_alloc::heap_allocator!(size: HEAP_SIZE);
 
     // Периферия разбирается один раз: каждое поле одноразовое, поэтому все
     // GPIO стираются до [`AnyPin`] одним списком, и из него по номерам из
@@ -345,6 +382,7 @@ async fn main(spawner: Spawner) -> ! {
         RMT,
         TIMG0,
         FROM_CPU_INTR0,
+        WIFI,
         GPIO0,
         GPIO1,
         GPIO2,
@@ -440,6 +478,17 @@ async fn main(spawner: Spawner) -> ! {
     info!(
         "Матрица {MATRIX_W}×{MATRIX_H}, Раскладка {layout:?}, стартовый угол {corner:?}; Лента на GPIO{LED_PIN}, потолок яркости {MAX_BRIGHTNESS}"
     );
+
+    // Сеть — параллельно с Лентой, только с учётными данными из сборки;
+    // её сбои не касаются рендера (задачи независимы).
+    if WIFI_CREDENTIALS_SET {
+        // Семя стека — из аппаратного ГСЧ (канон примера esp-hal).
+        let rng = Rng::new();
+        let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+        net::start(&spawner, WIFI, seed, env!("CARGO_PKG_VERSION"));
+    } else {
+        info!("Wi-Fi: WIFI_SSID/WIFI_PASS не заданы при сборке — сеть отключена, Гирлянда офлайн");
+    }
 
     // Жизненный цикл Ленты — отдельная задача со статическим фьючерсом,
     // стек main не несёт ни драйвера, ни буферов кадра.

@@ -27,6 +27,11 @@ const DEFAULT_MAX_BRIGHTNESS: &str = "64";
 const DEFAULT_TEST_GRID_SECS: &str = "8";
 const DEFAULT_DRIVER_GATE: &str = "0";
 
+// Учётные данные Wi-Fi — только при сборке; пустые значения (дефолт)
+// означают офлайн-режим: прошивка собирается и работает без сети.
+const DEFAULT_WIFI_SSID: &str = "";
+const DEFAULT_WIFI_PASS: &str = "";
+
 fn build_config() {
     for (name, default) in [
         ("MATRIX_W", DEFAULT_MATRIX_W),
@@ -38,6 +43,8 @@ fn build_config() {
         ("MAX_BRIGHTNESS", DEFAULT_MAX_BRIGHTNESS),
         ("TEST_GRID_SECS", DEFAULT_TEST_GRID_SECS),
         ("DRIVER_GATE", DEFAULT_DRIVER_GATE),
+        ("WIFI_SSID", DEFAULT_WIFI_SSID),
+        ("WIFI_PASS", DEFAULT_WIFI_PASS),
     ] {
         let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
         println!("cargo:rustc-env={name}={value}");
