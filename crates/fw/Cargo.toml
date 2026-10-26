@@ -1,0 +1,32 @@
+[package]
+name = "fw"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Прошивка Гирлянды на ESP32-C6: каркас на esp-hal/esp-rtos"
+publish = false
+
+[dependencies]
+garland-core.workspace = true
+
+# Железные крейты — только под target прошивки; на хосте fw собирается
+# пустой заглушкой, чтобы workspace-гейты шли без железа.
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+embassy-executor = { version = "0.10.0", features = ["log"] }
+embassy-time = { version = "0.5.1", features = ["log"] }
+esp-alloc = { version = "0.11.0", features = ["esp32c6"] }
+esp-backtrace = { version = "0.20.0", features = [
+  "esp32c6",
+  "panic-handler",
+  "println",
+] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c6", "log-04"] }
+esp-hal = { version = "~1.2.2", features = ["esp32c6", "log-04", "unstable"] }
+esp-println = { version = "0.18.0", features = ["esp32c6", "log-04"] }
+esp-rtos = { version = "0.4.0", features = [
+  "embassy",
+  "esp-alloc",
+  "esp32c6",
+  "log-04",
+] }
+log.workspace = true
