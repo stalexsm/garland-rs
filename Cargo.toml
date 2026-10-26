@@ -13,6 +13,8 @@ effect-rainbow = { path = "crates/effects/effect-rainbow" }
 effect-solid = { path = "crates/effects/effect-solid" }
 garland-core = { path = "crates/garland-core" }
 
+heapless = "0.9.1"
+
 log = "0.4.34"
 
 # Профили прошивки (канон шаблона esp-generate): dev-сборка без оптимизаций
