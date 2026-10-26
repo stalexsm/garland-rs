@@ -7,9 +7,12 @@
 //!    по Ленте и показывает порядок змейки, красный Пиксель 0 держит
 //!    стартовый угол.
 //! 2. Офлайн-гирлянда: Реестр эффектов под управлением кнопки — короткое
-//!    нажатие включает следующий Эффект по кругу, длинное (~0,8 с) переводит
-//!    в Покой (чёрная Лента), короткое из Покоя возвращает Текущий эффект.
-//!    Сеть не нужна.
+//!    нажатие включает следующий Эффект по кругу кроссфейдом (~0,8 с: два
+//!    Фреймбуфера, 16-битная альфа), длинное (~0,8 с) переводит в Покой
+//!    (чёрная Лента), короткое из Покоя возвращает Текущий эффект мгновенно.
+//!    Номер Текущего эффекта живёт в NVS-разделе (вне Слотов): пишется при
+//!    переключении, после подачи питания включается сохранённый. Сеть не
+//!    нужна.
 //! 3. Если при сборке задан `DRIVER_GATE=1`, вместо пункта 2 — непрерывный
 //!    blink/breathe: железный гейт драйвера на залипания и порчу цветов при
 //!    частых обновлениях.
@@ -30,7 +33,8 @@
 //! | `DRIVER_GATE`   | `1` — после сетки непрерывный blink/breathe вместо гирлянды        | `0`               |
 //!
 //! Сборка и заливка — из каталога `fw` (target и runner прописаны в
-//! `.cargo/config.toml`):
+//! `.cargo/config.toml`; заливка ставит таблицу разделов `partitions.csv` —
+//! nvs + otadata + ota_0 + ota_1 под флеш 4 МБ):
 //!
 //! ```text
 //! cargo build                          # Прошивка под Стенд 8×8
@@ -59,6 +63,10 @@ mod button;
 mod control;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod diag;
+// Память эффекта (NVS) — только на устройстве: хост-покрытие шва хранилища
+// живёт в тестах control (подставное хранилище).
+#[cfg(target_arch = "riscv32")]
+mod memory;
 
 // Размер кучи, байт: дефолт шаблона esp-generate; запас под Wi-Fi появится
 // вместе с esp-radio.
@@ -154,6 +162,8 @@ use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 #[cfg(target_arch = "riscv32")]
 use esp_hal_smartled::{AdapterError, RmtSmartLeds, WS2812B_TIMING, buffer_size, color_order};
+#[cfg(target_arch = "riscv32")]
+use esp_storage::FlashStorage;
 #[cfg(target_arch = "riscv32")]
 extern crate alloc;
 #[cfg(target_arch = "riscv32")]
@@ -256,10 +266,12 @@ async fn strip_task(
     rmt_peripheral: RMT<'static>,
     led_pin: AnyPin<'static>,
     button_pin: AnyPin<'static>,
+    flash: FlashStorage<'static>,
     mapping: Mapping,
 ) {
     let mut led = init_strip_driver(rmt_peripheral, led_pin);
     let mut frame_buffer = [garland_core::Rgb8::BLACK; PIXELS];
+    let mut outgoing_buffer = [garland_core::Rgb8::BLACK; PIXELS];
     let mut strip_buffer = [RGB8::default(); PIXELS];
 
     // Фаза 1: тестовая сетка Раскладки.
@@ -301,13 +313,16 @@ async fn strip_task(
     }
 
     // Фаза 2: офлайн-гирлянда. Кнопка замыкает Пин на землю: зажата —
-    // низкий уровень (подтяжка вверх).
+    // низкий уровень (подтяжка вверх). Память Текущего эффекта — NVS-раздел
+    // вне Слотов: индекс читается на старте и пишется при переключении.
     let button_gpio = Input::new(button_pin, InputConfig::default().with_pull(Pull::Up));
     let mut button = Button::new();
-    let mut garland = Garland::new(REGISTRY, mapping, grid_end_ms);
+    let mut nvs = memory::NvsMemory::new(flash).await;
+    let mut garland = Garland::new(REGISTRY, mapping, grid_end_ms, &mut nvs);
     info!(
-        "Офлайн-гирлянда: эффектов в Реестре — {}, кнопка на GPIO{BUTTON_PIN}",
-        REGISTRY.len()
+        "Офлайн-гирлянда: эффектов в Реестре — {}, кнопка на GPIO{BUTTON_PIN}, сохранённый эффект — «{}»",
+        REGISTRY.len(),
+        garland.effect_name()
     );
     let mut now_ms = grid_end_ms;
     loop {
@@ -319,7 +334,8 @@ async fn strip_task(
             );
         }
         let mut frame = next_frame!(frame_buffer);
-        garland.render(&mut frame, now_ms);
+        let mut outgoing = next_frame!(outgoing_buffer);
+        garland.render(&mut frame, &mut outgoing, now_ms);
         show(led.as_mut(), &mut strip_buffer, &frame, &mapping).await;
         Timer::after(Duration::from_millis(u64::from(FRAME_TICK_MS))).await;
         // Шкала wrapping u32 переполняется за 49 суток; арифметика машин
@@ -345,6 +361,7 @@ async fn main(spawner: Spawner) -> ! {
         RMT,
         TIMG0,
         FROM_CPU_INTR0,
+        FLASH,
         GPIO0,
         GPIO1,
         GPIO2,
@@ -442,9 +459,11 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     // Жизненный цикл Ленты — отдельная задача со статическим фьючерсом,
-    // стек main не несёт ни драйвера, ни буферов кадра.
-    spawner
-        .spawn(strip_task(RMT, led_pin, button_pin, mapping).expect("задача Ленты не поднялась"));
+    // стек main не несёт ни драйвера, ни буферов кадра, ни флеша.
+    let flash = FlashStorage::new(FLASH);
+    spawner.spawn(
+        strip_task(RMT, led_pin, button_pin, flash, mapping).expect("задача Ленты не поднялась"),
+    );
 
     loop {
         Timer::after(Duration::from_secs(IDLE_TICK_SECS)).await;
