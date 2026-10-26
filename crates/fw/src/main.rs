@@ -201,7 +201,7 @@ use alloc::boxed::Box;
 #[cfg(target_arch = "riscv32")]
 use garland_core::{Corner, Frame, Layout, Mapping};
 #[cfg(target_arch = "riscv32")]
-use log::info;
+use log::{info, warn};
 #[cfg(target_arch = "riscv32")]
 use smart_leds::{RGB8, SmartLedsWriteAsync};
 
@@ -365,6 +365,17 @@ async fn strip_task(
 }
 
 /// Настоящая Прошивка — только под target riscv32imac-unknown-none-elf.
+// large_stack_frames меряет фьючерс embassy-задачи main вместе с разовой
+// инициализацией сети; embassy выделяет фьючерс статически (bss), стек при
+// работе не расходуется; ожидание (expect) этот поздний линт не связывает,
+// поэтому прицельное разрешение (allow).
+#[cfg_attr(
+    target_arch = "riscv32",
+    allow(
+        clippy::large_stack_frames,
+        reason = "фьючерс embassy-задачи выделяется статически (bss), стек не расходуется"
+    )
+)]
 #[cfg(target_arch = "riscv32")]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -486,6 +497,8 @@ async fn main(spawner: Spawner) -> ! {
         let rng = Rng::new();
         let seed = (rng.random() as u64) << 32 | rng.random() as u64;
         net::start(&spawner, WIFI, seed, env!("CARGO_PKG_VERSION"));
+    } else if WIFI_SSID.is_empty() != WIFI_PASS.is_empty() {
+        warn!("Wi-Fi: задан только один из WIFI_SSID/WIFI_PASS — сеть отключена, Гирлянда офлайн");
     } else {
         info!("Wi-Fi: WIFI_SSID/WIFI_PASS не заданы при сборке — сеть отключена, Гирлянда офлайн");
     }

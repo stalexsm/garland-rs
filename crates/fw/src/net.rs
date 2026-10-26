@@ -62,7 +62,9 @@ pub fn start(
     let station_config = Config::Station(
         StationConfig::default()
             .with_ssid(WIFI_SSID.try_into().expect("WIFI_SSID: длиннее 32 байт"))
-            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+            // WPA/WPA2: покрывает домашние роутеры в смешанном режиме;
+            // сети только-WPA3 esp-radio beta не поддерживает.
+            .with_authentication(AuthenticationMethodConfig::WpaWpa2Personal(
                 WIFI_PASS.try_into().expect("WIFI_PASS: длиннее 64 байт"),
             )),
     );

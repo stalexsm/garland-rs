@@ -41,16 +41,18 @@ const PAGE_CLOSE: &str = "</p></body></html>";
 pub fn write_version_page(page: &mut heapless::String<RESPONSE_MAX>, version: &str) {
     let body_len = PAGE_OPEN.len() + version.len() + PAGE_CLOSE.len();
     page.clear();
-    page.push_str(RESPONSE_HEAD)
-        .expect("страница помещается в буфер");
+    put(page, RESPONSE_HEAD);
     push_usize(page, body_len);
-    page.push_str(RESPONSE_HEAD_END)
-        .expect("страница помещается в буфер");
-    page.push_str(PAGE_OPEN)
-        .expect("страница помещается в буфер");
-    page.push_str(version).expect("страница помещается в буфер");
-    page.push_str(PAGE_CLOSE)
-        .expect("страница помещается в буфер");
+    put(page, RESPONSE_HEAD_END);
+    put(page, PAGE_OPEN);
+    put(page, version);
+    put(page, PAGE_CLOSE);
+}
+
+/// Дописать строку: буфер рассчитан на страницу целиком, переполнение —
+/// ошибка программиста, паника ловит её на месте.
+fn put(page: &mut heapless::String<RESPONSE_MAX>, text: &str) {
+    page.push_str(text).expect("страница помещается в буфер");
 }
 
 /// Дописать число в десятичной записи. Длина — всегда в пределах usize,
