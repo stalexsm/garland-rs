@@ -1,9 +1,12 @@
-//! Реестр эффектов и машина Гирлянды: Текущий эффект, Покой, листание кнопкой.
+//! Реестр эффектов и машина Гирлянды: Текущий эффект, Покой, листание кнопкой,
+//! кроссфейд и память Текущего эффекта.
 //!
 //! Реестр — статический список фабрик Аддонов (решение ADR-0001): без
 //! рантайм-инициализации, новый Аддон — зависимость Прошивки и одна строка.
-//! Машина Гирлянды чистая: события кнопки и время приходят снаружи, поэтому
-//! сценарии «короткое/длинное нажатие, Покой» проверяются тестами на хосте.
+//! Машина Гирлянды чистая: события кнопки, время и хранилище приходят
+//! снаружи (шов [`EffectMemory`]), поэтому сценарии «короткое/длинное
+//! нажатие, Покой, восстановление питания» проверяются тестами на хосте
+//! на подставном хранилище и подставном времени.
 
 extern crate alloc;
 
@@ -11,7 +14,26 @@ use crate::button::ButtonEvent;
 use alloc::boxed::Box;
 use effect_rainbow::Rainbow;
 use effect_solid::Solid;
-use garland_core::{Effect, Frame, Mapping, Rgb8};
+use garland_core::{Effect, Frame, Mapping, Rgb8, blend};
+
+/// Длительность кроссфейда смены эффектов, мс: ~0,8 с (канон WLED, спека
+/// Гирлянды); в течение кроссфейда рендерятся оба эффекта — уходящий
+/// и Текущий — а вывод смешивается с 16-битной альфой.
+const CROSSFADE_MS: u32 = 800;
+
+/// Хранилище Текущего эффекта: машина пишет при переключении и читает на
+/// старте. На Прошивке это NVS-раздел вне Слотов (флеш — асинхронный, поэтому
+/// реализация буферизует номер и сбрасывает его в своих async-методах),
+/// в тестах — подставка; ошибки носителя решаются внутри реализации
+/// (например, журналом), машина остаётся чистой.
+pub trait EffectMemory {
+    /// Запомнить номер Текущего эффекта.
+    fn save(&mut self, index: usize);
+
+    /// Прочитать сохранённый номер; `None` — ничего не сохранено. Вызывается
+    /// один раз при старте машины.
+    fn load(&mut self) -> Option<usize>;
+}
 
 /// Фабрика Аддона: создаёт Эффект для заданной Привязки координат.
 pub type Factory = fn(Mapping) -> Box<dyn Effect>;
@@ -28,8 +50,32 @@ pub static REGISTRY: &[RegistryEntry] = &[
     }),
 ];
 
+/// Уходящий Эффект: живёт, пока идёт его кроссфейд с Текущим.
+struct FadeOut {
+    /// Экземпляр уходящего Эффекта — продолжает свою анимацию.
+    effect: Box<dyn Effect>,
+    /// Момент запуска уходящего экземпляра (мс): своя шкала сохраняется.
+    started_ms: u32,
+    /// Момент начала кроссфейда (мс): от него считается альфа смешения.
+    from_ms: u32,
+}
+
+/// Снимок вывода машины: источник кроссфейда, начавшегося посреди другого
+/// кроссфейда, — застывший Кадр на момент нажатия. Шкалы времени не имеет:
+/// картинка не меняется, уходит лишь альфа её смешения.
+struct Frozen {
+    /// Пиксели застывшего Кадра.
+    pixels: Box<[Rgb8]>,
+}
+
+impl Effect for Frozen {
+    fn render(&mut self, frame: &mut Frame<'_>, _elapsed_ms: u32) {
+        frame.pixels_mut().copy_from_slice(&self.pixels);
+    }
+}
+
 /// Машина Гирлянды: держит Текущий эффект Реестра и состояние Покоя.
-pub struct Garland {
+pub struct Garland<'m> {
     /// Реестр, который машина листает.
     registry: &'static [RegistryEntry],
     /// Привязка координат для фабрик Аддонов.
@@ -44,35 +90,63 @@ pub struct Garland {
     /// Момент запуска экземпляра (мс): у каждого Эффекта своя шкала,
     /// начинающаяся с нуля.
     started_ms: u32,
+    /// Уходящий Эффект во время кроссфейда; вне кроссфейда — `None`.
+    fading: Option<FadeOut>,
+    /// Отложенное переключение: номер нового эффекта, чей кроссфейд начнётся
+    /// от снимка текущего вывода на ближайшем кадре.
+    pending: Option<usize>,
+    /// Хранилище Текущего эффекта: пишется при переключении, читается
+    /// на старте.
+    memory: &'m mut dyn EffectMemory,
 }
 
-impl Garland {
-    /// Гирлянда с первым Эффектом Реестра, включённая с момента `start_ms` —
+impl<'m> Garland<'m> {
+    /// Гирлянда с эффектом из хранилища `memory` (без сохранённого или при
+    /// номере вне Реестра — с первым), включённая с момента `start_ms` —
     /// Прошивка заводит её после тестовой сетки, и шкала первого Эффекта
     /// начинается с нуля именно там.
     ///
     /// # Panics
     ///
     /// Паникует на пустом Реестре: листать нечего, это ошибка сборки.
-    pub fn new(registry: &'static [RegistryEntry], mapping: Mapping, start_ms: u32) -> Self {
+    pub fn new(
+        registry: &'static [RegistryEntry],
+        mapping: Mapping,
+        start_ms: u32,
+        memory: &'m mut dyn EffectMemory,
+    ) -> Self {
         assert!(!registry.is_empty(), "Реестр эффектов пуст");
+        // Номер вне Реестра (сузился после обновления Прошивки) — как
+        // отсутствие сохранённого: начинаем с первого.
+        let current = memory
+            .load()
+            .filter(|index| *index < registry.len())
+            .unwrap_or(0);
         Self {
             registry,
             mapping,
-            current: 0,
+            current,
             asleep: false,
-            effect: (registry[0].1)(mapping),
+            effect: (registry[current].1)(mapping),
             started_ms: start_ms,
+            fading: None,
+            pending: None,
+            memory,
         }
     }
 
-    /// Событие кнопки: короткое листает Реестр по кругу, а в Покое возвращает
-    /// Текущий эффект; длинное переводит в Покой. Имя затронутого Эффекта
-    /// для журнала — [`Garland::effect_name`].
+    /// Событие кнопки: короткое листает Реестр по кругу (кроссфейдом), а в
+    /// Покое возвращает Текущий эффект мгновенно; длинное переводит в Покой.
+    /// Номер и хранилище меняются сразу; во время кроссфейда картинка
+    /// догоняет на ближайшем кадре — от снимка текущего вывода (без рывка
+    /// альфы). Имя затронутого Эффекта — [`Garland::effect_name`].
     pub fn press(&mut self, event: ButtonEvent, now_ms: u32) {
         match event {
             ButtonEvent::LongPress => {
                 self.asleep = true;
+                // Покой гасит Ленту мгновенно: незавершённый кроссфейд не
+                // вспыхнет после пробуждения.
+                self.fading = None;
             }
             ButtonEvent::ShortPress => {
                 if self.asleep {
@@ -81,7 +155,13 @@ impl Garland {
                     self.asleep = false;
                 } else {
                     let next = (self.current + 1) % self.registry.len();
-                    self.spawn(next, now_ms);
+                    self.current = next;
+                    self.memory.save(next);
+                    if self.fading.is_some() {
+                        self.pending = Some(next);
+                    } else {
+                        self.start(next, now_ms);
+                    }
                 }
             }
         }
@@ -92,21 +172,88 @@ impl Garland {
         self.registry[self.current].0
     }
 
-    /// Отрисовать Кадр на момент `now_ms`: в Покое Фреймбуфер полностью
-    /// чёрный, иначе — вывод Текущего эффекта по его собственной шкале.
-    pub fn render(&mut self, frame: &mut Frame<'_>, now_ms: u32) {
+    /// Отрисовать Кадр на момент `now_ms`. В Покое Фреймбуфер полностью
+    /// чёрный; во время кроссфейда — смесь уходящего (`outgoing`) и Текущего
+    /// (`frame`) Эффектов с 16-битной альфой, вне его — вывод Текущего
+    /// эффекта по его собственной шкале. Отложенное переключение исполняется
+    /// на ближайшем кадре от снимка текущего вывода. Буферы обязаны
+    /// описывать одну Матрицу.
+    pub fn render(&mut self, frame: &mut Frame<'_>, outgoing: &mut Frame<'_>, now_ms: u32) {
         if self.asleep {
             frame.fill(Rgb8::BLACK);
             return;
         }
-        let elapsed_ms = now_ms.wrapping_sub(self.started_ms);
-        self.effect.render(frame, elapsed_ms);
+        debug_assert_eq!(
+            frame.len(),
+            outgoing.len(),
+            "Фреймбуферы кроссфейда разного размера"
+        );
+
+        // Отложенное переключение: источник нового кроссфейда — снимок
+        // текущего вывода, чтобы альфа не прыгала с текущей на нулевую.
+        if let Some(index) = self.pending.take() {
+            let fading = matches!(
+                &self.fading,
+                Some(fade) if now_ms.wrapping_sub(fade.from_ms) < CROSSFADE_MS
+            );
+            if fading {
+                self.blend_frame(frame, outgoing, now_ms);
+                self.fading = Some(FadeOut {
+                    effect: Box::new(Frozen {
+                        pixels: Box::from(frame.pixels()),
+                    }),
+                    started_ms: now_ms,
+                    from_ms: now_ms,
+                });
+            }
+            self.effect = (self.registry[index].1)(self.mapping);
+            self.started_ms = now_ms;
+            if fading {
+                return; // кадр уже выведен — это и есть точка непрерывности
+            }
+        }
+
+        // Просроченный кроссфейд снимается до рендера: после его конца
+        // Лента — чистый вывод Текущего эффекта.
+        if let Some(fade) = &self.fading
+            && now_ms.wrapping_sub(fade.from_ms) >= CROSSFADE_MS
+        {
+            self.fading = None;
+        }
+        match &mut self.fading {
+            Some(_) => self.blend_frame(frame, outgoing, now_ms),
+            None => self
+                .effect
+                .render(frame, now_ms.wrapping_sub(self.started_ms)),
+        }
     }
 
-    /// Запустить Эффект под номером `index` заново со шкалой от `now_ms`.
-    fn spawn(&mut self, index: usize, now_ms: u32) {
-        self.current = index;
-        self.effect = (self.registry[index].1)(self.mapping);
+    /// Кадр кроссфейда: уходящий Эффект рендерится в `outgoing`, Текущий —
+    /// в `frame`, вывод — их 16-битная смесь по прогрессу кроссфейда.
+    fn blend_frame(&mut self, frame: &mut Frame<'_>, outgoing: &mut Frame<'_>, now_ms: u32) {
+        let Some(fade) = &mut self.fading else {
+            return;
+        };
+        fade.effect
+            .render(outgoing, now_ms.wrapping_sub(fade.started_ms));
+        self.effect
+            .render(frame, now_ms.wrapping_sub(self.started_ms));
+        let progress = now_ms.wrapping_sub(fade.from_ms);
+        let alpha = (progress * u32::from(garland_core::MAX_ALPHA) / CROSSFADE_MS) as u16;
+        for (dst, src) in frame.pixels_mut().iter_mut().zip(outgoing.pixels()) {
+            *dst = blend(*src, *dst, alpha);
+        }
+    }
+
+    /// Смена эффекта вне идущего кроссфейда: прежний экземпляр уходит
+    /// источником нового кроссфейда и продолжает свою анимацию до конца.
+    fn start(&mut self, index: usize, now_ms: u32) {
+        let outgoing = core::mem::replace(&mut self.effect, (self.registry[index].1)(self.mapping));
+        self.fading = Some(FadeOut {
+            effect: outgoing,
+            started_ms: self.started_ms,
+            from_ms: now_ms,
+        });
         self.started_ms = now_ms;
     }
 }
@@ -114,7 +261,7 @@ impl Garland {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use garland_core::{Corner, Layout};
+    use garland_core::{Corner, Layout, MAX_ALPHA};
 
     // Цвет первого Аддона — литерал теста, независимый от кода Аддона:
     // случайная смена цвета ловится здесь.
@@ -124,53 +271,85 @@ mod tests {
         b: 120,
     };
 
+    /// Подставное хранилище: копит последний сохранённый индекс.
+    struct FakeMemory(Option<usize>);
+
+    impl EffectMemory for FakeMemory {
+        fn save(&mut self, index: usize) {
+            self.0 = Some(index);
+        }
+        fn load(&mut self) -> Option<usize> {
+            self.0
+        }
+    }
+
     /// Матрица 4×3, змейка по рядам.
     fn mapping() -> Mapping {
         Mapping::new(4, 3, Layout::RowSerpentine, Corner::TopLeft)
     }
 
-    /// Цвет Пикселя Ленты `index` на текущем кадре.
-    fn wire_pixel(frame: &Frame<'_>, mapping: &Mapping, index: usize) -> Rgb8 {
-        let (x, y) = mapping.coord(index);
-        frame.get(x, y).expect("Пиксель внутри Матрицы")
+    /// Рабочий и уходящий Фреймбуферы 4×3 — шов кроссфейда машины.
+    fn frame_pair() -> (Frame<'static>, Frame<'static>) {
+        let frame = Frame::new(4, 3, Box::leak(vec![Rgb8::BLACK; 12].into_boxed_slice())).unwrap();
+        let outgoing =
+            Frame::new(4, 3, Box::leak(vec![Rgb8::BLACK; 12].into_boxed_slice())).unwrap();
+        (frame, outgoing)
+    }
+
+    /// Эталонный кадр Эффекта Реестра под номером `index`, прожившего
+    /// `elapsed_ms` со своего запуска — минуя машину Гирлянды: фабрика
+    /// Реестра и трейт Эффекта, без промежуточных слоёв.
+    fn registry_frame(index: usize, mapping: &Mapping, elapsed_ms: u32) -> Box<[Rgb8]> {
+        let mut effect = (REGISTRY[index].1)(*mapping);
+        let mut buffer = vec![Rgb8::BLACK; 12];
+        effect.render(&mut Frame::new(4, 3, &mut buffer).unwrap(), elapsed_ms);
+        buffer.into_boxed_slice()
+    }
+
+    /// Канал `c` лежит между `a` и `b` включительно — свойство поканального
+    /// смешения без выбросов (рывка).
+    fn between(a: Rgb8, b: Rgb8, c: Rgb8) -> bool {
+        let inside = |x: u8, y: u8, z: u8| (x <= z && z <= y) || (y <= z && z <= x);
+        inside(a.r, b.r, c.r) && inside(a.g, b.g, c.g) && inside(a.b, b.b, c.b)
     }
 
     /// Гирлянда стартует с первого Реестра: статичный цвет горит всей Лентой.
     #[test]
     fn starts_with_first_effect_lit() {
-        let mut garland = Garland::new(REGISTRY, mapping(), 0);
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
 
-        garland.render(&mut frame, 100);
+        garland.render(&mut frame, &mut outgoing, 100);
 
         assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
     }
 
-    /// Короткое нажатие включает следующий Эффект Реестра: после него Лента —
-    /// не заливка, а радуга (Пиксель 0 Ленты — красный, Пиксели разные).
+    /// Короткое нажатие включает следующий Эффект Реестра: по завершении
+    /// кроссфейда Лента — радуга (совпадает с эталоном по его шкале).
     #[test]
     fn short_press_advances_to_next_effect() {
         let mapping = mapping();
-        let mut garland = Garland::new(REGISTRY, mapping, 0);
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
 
         garland.press(ButtonEvent::ShortPress, 200);
-        garland.render(&mut frame, 200);
+        let end = 200 + CROSSFADE_MS;
+        garland.render(&mut frame, &mut outgoing, end);
 
-        assert_eq!(wire_pixel(&frame, &mapping, 0), Rgb8 { r: 255, g: 0, b: 0 });
-        let first = frame.pixels()[0];
-        assert!(
-            frame.pixels().iter().any(|c| *c != first),
-            "радуга не заливка"
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, end - 200).as_ref(),
+            "после кроссфейда Лента — новый эффект"
         );
     }
 
     /// Имя Текущего эффекта идёт за номером в Реестре; Покой номер не меняет.
     #[test]
     fn effect_name_follows_the_registry() {
-        let mut garland = Garland::new(REGISTRY, mapping(), 0);
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
 
         assert_eq!(garland.effect_name(), "Статичный цвет");
         garland.press(ButtonEvent::ShortPress, 100);
@@ -184,16 +363,16 @@ mod tests {
     }
 
     /// Короткие нажатия листают Реестр по кругу: два нажатия на Реестре из
-    /// двух Эффектов возвращают статичный цвет.
+    /// двух Эффектов возвращают статичный цвет по завершении кроссфейда.
     #[test]
     fn short_press_wraps_around_registry() {
-        let mut garland = Garland::new(REGISTRY, mapping(), 0);
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
 
         garland.press(ButtonEvent::ShortPress, 200);
         garland.press(ButtonEvent::ShortPress, 300);
-        garland.render(&mut frame, 300);
+        garland.render(&mut frame, &mut outgoing, 300 + CROSSFADE_MS);
 
         assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
     }
@@ -202,13 +381,13 @@ mod tests {
     /// повторное длинное ничего не меняет.
     #[test]
     fn long_press_darkens_strip() {
-        let mut garland = Garland::new(REGISTRY, mapping(), 0);
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
 
         garland.press(ButtonEvent::LongPress, 500);
         garland.press(ButtonEvent::LongPress, 600);
-        garland.render(&mut frame, 700);
+        garland.render(&mut frame, &mut outgoing, 700);
 
         assert_eq!(frame.pixels(), &[Rgb8::BLACK; 12]);
     }
@@ -219,26 +398,239 @@ mod tests {
     #[test]
     fn short_press_in_idle_restores_current_effect() {
         let mapping = mapping();
-        let mut garland = Garland::new(REGISTRY, mapping, 0);
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
         garland.press(ButtonEvent::ShortPress, 200);
         garland.press(ButtonEvent::LongPress, 1_000);
 
-        let mut idle = [Rgb8::BLACK; 12];
-        garland.render(&mut Frame::new(4, 3, &mut idle).unwrap(), 1_100);
-        assert_eq!(idle, [Rgb8::BLACK; 12], "в Покое Лента погашена");
+        let (mut idle, mut outgoing) = frame_pair();
+        garland.render(&mut idle, &mut outgoing, 1_100);
+        assert_eq!(idle.pixels(), &[Rgb8::BLACK; 12], "в Покое Лента погашена");
 
         garland.press(ButtonEvent::ShortPress, 5_000);
-        let mut restored = [Rgb8::BLACK; 12];
-        garland.render(&mut Frame::new(4, 3, &mut restored).unwrap(), 5_000);
+        let (mut restored, mut outgoing) = frame_pair();
+        garland.render(&mut restored, &mut outgoing, 5_000);
 
         // Эталон: та же радуга без Покоя, прожившая те же 4 800 мс со своего
         // включения.
-        let mut reference = Garland::new(REGISTRY, mapping, 0);
+        let mut reference_memory = FakeMemory(None);
+        let mut reference = Garland::new(REGISTRY, mapping, 0, &mut reference_memory);
         reference.press(ButtonEvent::ShortPress, 200);
-        let mut expected = [Rgb8::BLACK; 12];
-        reference.render(&mut Frame::new(4, 3, &mut expected).unwrap(), 5_000);
+        let (mut expected, mut reference_outgoing) = frame_pair();
+        reference.render(&mut expected, &mut reference_outgoing, 5_000);
 
-        assert_ne!(restored, [Rgb8::BLACK; 12], "после пробуждения Лента горит");
-        assert_eq!(restored, expected, "фаза радуги продолжается");
+        assert_ne!(
+            restored.pixels(),
+            &[Rgb8::BLACK; 12],
+            "после пробуждения Лента горит"
+        );
+        assert_eq!(
+            restored.pixels(),
+            expected.pixels(),
+            "фаза радуги продолжается"
+        );
+    }
+
+    /// Смена эффектов идёт кроссфейдом: в начале Лента — уходящий эффект,
+    /// в середине — смесь без выбросов, в конце — чистый Текущий эффект.
+    #[test]
+    fn effect_switch_fades_from_old_to_new() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        garland.press(ButtonEvent::ShortPress, 200); // статичный → радуга
+
+        let (mut frame, mut outgoing) = frame_pair();
+
+        // Начало кроссфейда: Лента ещё показывает уходящий статичный цвет.
+        garland.render(&mut frame, &mut outgoing, 200);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(0, &mapping, 200).as_ref(),
+            "в начале кроссфейда Лента — уходящий эффект"
+        );
+
+        // Середина: каждый Пиксель между уходящим и новым — рывка нет;
+        // и это настоящая смесь, а не проход насквозь.
+        let mid = 200 + CROSSFADE_MS / 2;
+        garland.render(&mut frame, &mut outgoing, mid);
+        let old = registry_frame(0, &mapping, mid);
+        let new = registry_frame(1, &mapping, mid - 200);
+        for (i, pixel) in frame.pixels().iter().enumerate() {
+            assert!(
+                between(old[i], new[i], *pixel),
+                "Пиксель {i} вне кроссфейда"
+            );
+        }
+        assert_ne!(frame.pixels(), old.as_ref(), "середина — не чистый старый");
+        assert_ne!(frame.pixels(), new.as_ref(), "середина — не чистый новый");
+
+        // Конец и после конца: Лента — чистый новый эффект на его шкале.
+        let end = 200 + CROSSFADE_MS;
+        garland.render(&mut frame, &mut outgoing, end);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, end - 200).as_ref()
+        );
+        garland.render(&mut frame, &mut outgoing, end + 33); // такт Прошивки
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, end + 33 - 200).as_ref()
+        );
+    }
+
+    /// Переключение эффекта сохраняет его номер в хранилище.
+    #[test]
+    fn switch_saves_index_to_memory() {
+        let mut memory = FakeMemory(None);
+        {
+            let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
+            garland.press(ButtonEvent::ShortPress, 200);
+        }
+        assert_eq!(memory.0, Some(1), "переключение сохранило индекс");
+
+        {
+            let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
+            garland.press(ButtonEvent::ShortPress, 400); // по кругу — снова первый
+        }
+        assert_eq!(memory.0, Some(0));
+    }
+
+    /// Переподача питания: новая машина с тем же хранилищем включается
+    /// с сохранённого эффекта, сразу и на его собственной шкале.
+    #[test]
+    fn power_restore_starts_with_saved_effect() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        {
+            let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+            garland.press(ButtonEvent::ShortPress, 200); // переключили на радугу
+        }
+        assert_eq!(memory.0, Some(1), "перед «отключением» индекс сохранён");
+
+        let mut garland = Garland::new(REGISTRY, mapping, 5_000, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
+        garland.render(&mut frame, &mut outgoing, 5_000 + 33);
+
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, 33).as_ref(),
+            "после переподачи питания включён сохранённый эффект"
+        );
+    }
+
+    /// Сохранённый номер вне Реестра (Реестр сузился после обновления
+    /// Прошивки) — не падение: Гирлянда включается с первого эффекта.
+    #[test]
+    fn saved_index_out_of_registry_falls_back_to_first() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(Some(5));
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
+
+        garland.render(&mut frame, &mut outgoing, 100);
+
+        assert_eq!(frame.pixels(), registry_frame(0, &mapping, 100).as_ref());
+    }
+
+    /// Без сохранённого номера (первый запуск) Гирлянда включается
+    /// с первого эффекта Реестра.
+    #[test]
+    fn no_saved_index_starts_with_first() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        let (mut frame, mut outgoing) = frame_pair();
+
+        garland.render(&mut frame, &mut outgoing, 100);
+
+        assert_eq!(frame.pixels(), registry_frame(0, &mapping, 100).as_ref());
+    }
+
+    /// Покой и пробуждение не трогают хранилище: сохраняется только смена
+    /// эффекта.
+    #[test]
+    fn idle_and_wake_do_not_touch_memory() {
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
+
+        garland.press(ButtonEvent::LongPress, 100); // Покой
+        garland.press(ButtonEvent::ShortPress, 200); // пробуждение
+
+        assert_eq!(memory.0, None, "Покой и пробуждение не пишут хранилище");
+    }
+
+    /// Переключение во время кроссфейда без рывка: новый кроссфейд стартует
+    /// от снимка текущего вывода (каналы за такт почти не меняются), затем
+    /// снимок плавно уходит в новый эффект.
+    #[test]
+    fn switch_during_fade_continues_from_current_output() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        garland.press(ButtonEvent::ShortPress, 200); // статичный → радуга
+
+        let (mut frame, mut outgoing) = frame_pair();
+
+        // Кадр перед нажатием и сразу после него: за один такт (1 мс)
+        // каналы смещаются меньше чем на 2 единицы — альфа не прыгает.
+        garland.render(&mut frame, &mut outgoing, 599);
+        let before = frame.pixels().to_vec();
+
+        garland.press(ButtonEvent::ShortPress, 600); // посреди кроссфейда
+        garland.render(&mut frame, &mut outgoing, 600);
+        for (i, (was, now)) in before.iter().zip(frame.pixels()).enumerate() {
+            let jump = was
+                .r
+                .abs_diff(now.r)
+                .max(was.g.abs_diff(now.g))
+                .max(was.b.abs_diff(now.b));
+            assert!(jump <= 2, "скачок {jump} на Пикселе {i}");
+        }
+
+        // Источник нового кроссфейда — снимок: смесь на момент нажатия
+        // (альфа прошла половину пути: 400 из 800 мс).
+        let snapshot: Vec<Rgb8> = registry_frame(0, &mapping, 600)
+            .iter()
+            .zip(registry_frame(1, &mapping, 400).iter())
+            .map(|(old, new)| blend(*old, *new, MAX_ALPHA / 2))
+            .collect();
+
+        // Середина нового кроссфейда: пиксели между снимком и статичным.
+        let mid = 600 + CROSSFADE_MS / 2;
+        garland.render(&mut frame, &mut outgoing, mid);
+        for (i, pixel) in frame.pixels().iter().enumerate() {
+            assert!(
+                between(snapshot[i], WARM_WHITE, *pixel),
+                "Пиксель {i} вне кроссфейда"
+            );
+        }
+
+        // Конец: чистый статичный цвет.
+        garland.render(&mut frame, &mut outgoing, 600 + CROSSFADE_MS);
+        assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
+    }
+
+    /// Длинное нажатие посреди кроссфейда гасит Ленту сразу, а пробуждение
+    /// возвращает чистый Текущий эффект — без остатка кроссфейда.
+    #[test]
+    fn idle_during_fade_gives_black_then_current() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        garland.press(ButtonEvent::ShortPress, 200); // статичный → радуга
+        garland.press(ButtonEvent::LongPress, 500); // Покой среди кроссфейда
+
+        let (mut frame, mut outgoing) = frame_pair();
+        garland.render(&mut frame, &mut outgoing, 700);
+        assert_eq!(frame.pixels(), &[Rgb8::BLACK; 12], "Покой гасит сразу");
+
+        garland.press(ButtonEvent::ShortPress, 2_000); // пробуждение
+        garland.render(&mut frame, &mut outgoing, 2_000);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, 2_000 - 200).as_ref(),
+            "после пробуждения — чистый Текущий эффект"
+        );
     }
 }

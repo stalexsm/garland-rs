@@ -31,7 +31,20 @@ esp-backtrace = { version = "0.20.0", features = [
   "panic-handler",
   "println",
 ] }
-esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c6", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = [
+  "esp32c6",
+  "log-04",
+  "embedded-storage",
+] }
+# Флеш: чтение таблицы разделов и NVS-хранилище Текущего эффекта.
+esp-storage = { version = "0.10.0", features = ["esp32c6"] }
+# Ключ-значение поверх NVS-раздела: износостойкость и живучесть при сбросе
+# питания решены проверенным крейтом (map API поверх async NorFlash).
+sequential-storage = "8.0.2"
+# Мост блокирующего NorFlash-вида NVS-раздела в async-трейты sequential-storage.
+embassy-embedded-hal = "0.6.0"
+# block_on для синхронной NVS-записи при переключении эффекта.
+embassy-futures = "0.1.2"
 esp-hal = { version = "~1.2.2", features = ["esp32c6", "log-04", "unstable"] }
 # Драйвер Ленты: RMT-TX адаптер smart-leds с таймингами WS2812B (порядок GRB);
 # RMT в esp-hal 1.x нестабилен, потому у esp-hal включена feature `unstable`.
