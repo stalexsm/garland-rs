@@ -106,9 +106,9 @@ mod memory;
 #[cfg(target_arch = "riscv32")]
 mod net;
 
-// Размер куч (конфигурация примера esp-hal для Wi-Fi, см.
-// docs/research/wifi-http.md): reclaimed-RAM — под аллокации прошивки,
-// обычный heap — под буферы Wi-Fi, которые esp-radio берёт из esp-alloc.
+// Размер куч (конфигурация примера esp-hal для Wi-Fi): reclaimed-RAM —
+// под аллокации прошивки, обычный heap — под буферы Wi-Fi, которые
+// esp-radio берёт из esp-alloc.
 #[cfg(target_arch = "riscv32")]
 const RECLAIMED_HEAP_SIZE: usize = 64 * 1024;
 #[cfg(target_arch = "riscv32")]

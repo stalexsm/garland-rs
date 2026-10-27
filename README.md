@@ -138,7 +138,6 @@ crates/
   effects/           аддоны — по крейту на эффект
 docs/
   adr/               архитектурные решения
-  research/          исследования железа и крейтов
 GLOSSARY.md          словарь терминов проекта
 ```
 
@@ -153,4 +152,3 @@ GLOSSARY.md          словарь терминов проекта
 - [GLOSSARY.md](GLOSSARY.md) — термины проекта (лента, матрица, эффект, аддон, слот, откат…).
 - [docs/agents/architecture.md](docs/agents/architecture.md) — слои workspace, поток кадра, машина Гирлянды, OTA-конвейер.
 - [docs/adr/](docs/adr/) — почему эффекты это крейты-аддоны, как устроены OTA и память эффекта.
-- [docs/research/](docs/research/) — исследования стека esp-hal, Wi-Fi/HTTP, драйвера ленты и эффектов.
