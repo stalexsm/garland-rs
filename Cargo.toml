@@ -9,16 +9,25 @@ edition = "2024"
 rust-version = "1.95"
 
 [workspace.dependencies]
-effect-precipitation = { path = "crates/effects/effect-precipitation" }
-effect-pulse = { path = "crates/effects/effect-pulse" }
-effect-rainbow = { path = "crates/effects/effect-rainbow" }
-effect-rings = { path = "crates/effects/effect-rings" }
-effect-solid = { path = "crates/effects/effect-solid" }
-effect-sparkle = { path = "crates/effects/effect-sparkle" }
+# effects
+effect-balls = { path = "crates/effects/effect-balls" }
+effect-clouds = { path = "crates/effects/effect-clouds" }
+effect-confetti = { path = "crates/effects/effect-confetti" }
+effect-fire = { path = "crates/effects/effect-fire" }
+effect-lava = { path = "crates/effects/effect-lava" }
+effect-matrix = { path = "crates/effects/effect-matrix" }
+effect-plasma = { path = "crates/effects/effect-plasma" }
+effect-rainbow-diag = { path = "crates/effects/effect-rainbow-diag" }
+effect-rainbow-veil = { path = "crates/effects/effect-rainbow-veil" }
+effect-snowfall = { path = "crates/effects/effect-snowfall" }
+effect-starfall = { path = "crates/effects/effect-starfall" }
+effect-waves = { path = "crates/effects/effect-waves" }
+
+# core
 garland-core = { path = "crates/garland-core" }
 
+# crates
 heapless = "0.9.1"
-
 log = "0.4.34"
 
 # Профили прошивки (канон шаблона esp-generate): dev-сборка без оптимизаций

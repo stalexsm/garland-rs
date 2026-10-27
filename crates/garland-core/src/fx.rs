@@ -3,10 +3,9 @@
 //! палитры и rainbow-конверсия HSV.
 //!
 //! Точные целочисленные порты алгоритмов FastLED 3.6.0 (семантика
-//! `FASTLED_SCALE8_FIXED`, `FASTLED_BLEND_FIXED`, `FASTLED_NOISE_FIXED`)
-//! и фейдера эффектов GyverMatrixOS (MIT © 2020 AlexGyver) — см.
-//! `docs/research/fastled-primitives.md` и `docs/research/gyver-effects.md`.
-//! Всё чисто целочисленное, без float: одинаково на хосте и устройстве.
+//! `FASTLED_SCALE8_FIXED`, `FASTLED_BLEND_FIXED`, `FASTLED_NOISE_FIXED`) —
+//! см. `docs/research/fastled-primitives.md`. Всё чисто целочисленное,
+//! без float: одинаково на хосте и устройстве.
 
 use crate::color::{Hsv8, Rgb8};
 use crate::frame::Frame;
@@ -51,7 +50,7 @@ pub fn fade_to_black(c: Rgb8, fade_by: u8) -> Rgb8 {
     }
 }
 
-/// `fadePixel` GyverMatrixOS (новый фейдер): чёрный не трогается; пока
+/// `fadePixel` исходных прошивок (новый фейдер): чёрный не трогается; пока
 /// какой-то канал дошёл до порога, цвет гаснет на [`fade_to_black`], а
 /// ниже порога гаснет мгновенно — хвосты комет не «тлеют» вечно.
 pub fn fade_pixel(c: Rgb8, step: u8) -> Rgb8 {
@@ -174,7 +173,7 @@ pub fn sin8(theta: u8) -> u8 {
 /// `hsv2rgb_rainbow` FastLED (`src/hsv2rgb.cpp`): основная конверсия
 /// экосистемы — цветовой круг разбит на 8 секций по 32 единицы тона с
 /// кусочно-линейными «полками» яркости (жёлтый намеренно ярче). Все
-/// эффекты GyverMatrixOS окрашены именно через неё — порт бит-в-бит.
+/// эффекты экосистемы окрашены именно через неё — порт бит-в-бит.
 pub fn hsv2rgb_rainbow(c: Hsv8) -> Rgb8 {
     /// Опорные уровни градиента секций (`K255/K171/K170/K85`).
     const K171: u8 = 171;
@@ -508,7 +507,7 @@ pub const PARTY_PALETTE: Palette16 = Palette16::new([
 /// ровно один экземпляр Текущего эффекта).
 pub const NOISE_MAX_SIDE: u16 = 64;
 
-/// Движок шумовых эффектов GyverMatrixOS (`fillNoiseLED`, Noise + Palette):
+/// Движок шумовых эффектов (`fillNoiseLED`, Noise + Palette):
 /// квадратное поле 8-битного шума Перлина с дрейфом координат, сглаживанием
 /// во времени и окраской через палитру. Эффект владеет полем и каждый Кадр
 /// делает `tick` (шаг физики) и `render` (окраска в Фреймбуфер).
@@ -604,16 +603,32 @@ impl NoiseField {
 
 // ============ Такты эффектов ============
 
-/// Потолок догоняющих тактов: нормальный рендер опаздывает максимум на
-/// такт-два; если шкала времени перепрыгнула дальше (переполнение u32),
-/// эффект досчитывает лишь этот потолок, а не копит многочасовую задолженность.
-pub const MAX_CATCHUP: u32 = 8;
+/// Потолок догоняющих тактов: нормальный рендер опаздывает на такт-два;
+/// пауза в кадрах дольше [`CATCHUP_LIMIT`] тактов считается сбросом шкалы
+/// (долгий Покой, пауза планировщика) — эффект продолжит с текущего кадра,
+/// не копя многочасовую задолженность.
+pub const CATCHUP_LIMIT: u32 = 64;
 
 /// Число тактов эффекта между кадрами `prev_ms` и `now_ms` при интервале
-/// `tick_ms`: эффекты Gyver — пошаговые (шаг раз в ~80 мс), состояние
-/// продвигается на все пропущенные такты разом. `tick_ms` — не ноль.
+/// `tick_ms`: пошаговые эффекты шагают на все пропущенные такты разом;
+/// забег больше [`CATCHUP_LIMIT`] тактов даёт ноль — шкала сброшена.
+/// `tick_ms` — не ноль.
 pub fn steps_since(prev_ms: u32, now_ms: u32, tick_ms: u32) -> u32 {
-    (now_ms.wrapping_sub(prev_ms) / tick_ms).min(MAX_CATCHUP)
+    let steps = now_ms.wrapping_sub(prev_ms) / tick_ms;
+    if steps <= CATCHUP_LIMIT { steps } else { 0 }
+}
+
+/// Новый якорь тактов после кадра: граница последнего догнанного такта —
+/// сетка тактов не плывёт от неровных кадров; при сбросе шкалы (забег
+/// больше [`CATCHUP_LIMIT`]) — сам `now_ms`. Результат — следующий
+/// `prev_ms` для [`steps_since`].
+pub fn advance_anchor(prev_ms: u32, now_ms: u32, tick_ms: u32) -> u32 {
+    let steps = now_ms.wrapping_sub(prev_ms) / tick_ms;
+    if steps <= CATCHUP_LIMIT {
+        prev_ms.wrapping_add(steps.wrapping_mul(tick_ms))
+    } else {
+        now_ms
+    }
 }
 
 #[cfg(test)]
@@ -671,7 +686,7 @@ mod tests {
         );
     }
 
-    /// Фейдер Гайвера: чёрный не трогается, тусклые хвосты гаснут сразу,
+    /// Фейдер хвостов: чёрный не трогается, тусклые хвосты гаснут сразу,
     /// яркие — по долям.
     #[test]
     fn fade_pixel_floors_dim_tails() {
@@ -880,14 +895,38 @@ mod tests {
         assert!(NoiseField::new(65, 8).is_none());
     }
 
-    /// Такты: нормальный темп считается точно, переполнение шкалы времени
-    /// ограничено потолком догоняющих тактов.
+    /// Такты: нормальный темп считается точно, до лимита включительно;
+    /// прыжок назад (заворот u32) или долгая пауза — сброс шкалы (ноль).
     #[test]
     fn steps_since_counts_ticks() {
         assert_eq!(steps_since(0, 80, 80), 1);
         assert_eq!(steps_since(0, 240, 80), 3);
         assert_eq!(steps_since(80, 80, 80), 0);
-        // Прыжок назад (заворот u32) — не многочасовая задолженность.
-        assert_eq!(steps_since(1000, 5, 80), MAX_CATCHUP);
+        assert_eq!(
+            steps_since(0, CATCHUP_LIMIT * 80, 80),
+            CATCHUP_LIMIT,
+            "до лимита включительно такты догоняются"
+        );
+        assert_eq!(
+            steps_since(0, (CATCHUP_LIMIT + 1) * 80, 80),
+            0,
+            "забег сверх лимита — сброс шкалы"
+        );
+        assert_eq!(steps_since(1000, 5, 80), 0, "прыжок назад — сброс");
+    }
+
+    /// Якорь тактов: на границе догнанного такта (сетка не плывёт), сквозь
+    /// заворот u32; при сбросе шкалы — на сам момент кадра.
+    #[test]
+    fn anchor_sticks_to_tick_grid_and_resets() {
+        assert_eq!(advance_anchor(0, 100, 80), 80);
+        assert_eq!(advance_anchor(0, 160, 80), 160);
+        assert_eq!(advance_anchor(80, 240, 80), 240);
+        assert_eq!(advance_anchor(u32::MAX - 80, 40, 80), u32::MAX);
+        assert_eq!(
+            advance_anchor(0, (CATCHUP_LIMIT + 1) * 80, 80),
+            (CATCHUP_LIMIT + 1) * 80,
+            "сброс шкалы — якорь на момент кадра"
+        );
     }
 }
