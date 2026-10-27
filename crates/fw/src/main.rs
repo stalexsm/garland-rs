@@ -50,7 +50,8 @@
 //!
 //! Сборка и заливка — из каталога `fw` (target и runner прописаны в
 //! `.cargo/config.toml`; заливка ставит таблицу разделов `partitions.csv` —
-//! nvs + otadata + ota_0 + ota_1 под флеш 4 МБ):
+//! nvs + otadata + ota_0 + ota_1 под флеш 4 МБ — и свой Загрузчик с
+//! автооткатом `bootloader/esp32c6-rollback.bin`):
 //!
 //! ```text
 //! cargo build                          # Прошивка под Стенд 8×8
