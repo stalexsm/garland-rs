@@ -27,7 +27,7 @@ const DEFAULT_START_CORNER: &str = "top-left";
 const DEFAULT_LED_PIN: &str = "10";
 const DEFAULT_BUTTON_PIN: &str = "9";
 const DEFAULT_MAX_BRIGHTNESS: &str = "64";
-const DEFAULT_TEST_GRID_SECS: &str = "8";
+const DEFAULT_SMILE_SECS: &str = "8";
 const DEFAULT_DRIVER_GATE: &str = "0";
 
 // Учётные данные Wi-Fi — только при сборке; пустые значения (дефолт)
@@ -44,7 +44,7 @@ fn build_config() {
         ("LED_PIN", DEFAULT_LED_PIN),
         ("BUTTON_PIN", DEFAULT_BUTTON_PIN),
         ("MAX_BRIGHTNESS", DEFAULT_MAX_BRIGHTNESS),
-        ("TEST_GRID_SECS", DEFAULT_TEST_GRID_SECS),
+        ("SMILE_SECS", DEFAULT_SMILE_SECS),
         ("DRIVER_GATE", DEFAULT_DRIVER_GATE),
         ("WIFI_SSID", DEFAULT_WIFI_SSID),
         ("WIFI_PASS", DEFAULT_WIFI_PASS),

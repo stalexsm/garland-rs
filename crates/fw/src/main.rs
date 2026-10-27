@@ -3,9 +3,8 @@
 //!
 //! Жизненный цикл:
 //!
-//! 1. Тестовая сетка Раскладки (`TEST_GRID_SECS` секунд): белый бегунок идёт
-//!    по Ленте и показывает порядок змейки, красный Пиксель 0 держит
-//!    стартовый угол.
+//! 1. Приветствие (`SMILE_SECS` секунд): жёлтый улыбающийся смайл по центру
+//!    Матрицы, моргает глазами.
 //! 2. Офлайн-гирлянда: Реестр эффектов под управлением кнопки — короткое
 //!    нажатие включает следующий Эффект по кругу кроссфейдом (~0,8 с: два
 //!    Фреймбуфера, 16-битная альфа), длинное (~0,8 с) переводит в Покой
@@ -43,8 +42,8 @@
 //! | `LED_PIN`       | номер GPIO Ленты (ESP32-C6: 0..=30)                               | `10`              |
 //! | `BUTTON_PIN`    | номер GPIO кнопки (ESP32-C6: 0..=30; BOOT на DevKitC-1 — `9`)      | `9`               |
 //! | `MAX_BRIGHTNESS`| потолок яркости канала, 0..=255                                   | `64`              |
-//! | `TEST_GRID_SECS`| длительность тестовой сетки, секунд (0 — выключить)               | `8`               |
-//! | `DRIVER_GATE`   | `1` — после сетки непрерывный blink/breathe вместо гирлянды        | `0`               |
+//! | `SMILE_SECS`   | длительность смайла на старте, секунд (0 — выключить)          | `8`               |
+//! | `DRIVER_GATE`   | `1` — после смайла непрерывный blink/breathe вместо гирлянды     | `0`               |
 //! | `WIFI_SSID`     | имя домашней сети (пустое — офлайн-режим без сети)                | —                 |
 //! | `WIFI_PASS`     | пароль Wi-Fi                                                      | —                 |
 //!
@@ -126,7 +125,7 @@ const BUTTON_PIN: u16 = env_u16(env!("BUTTON_PIN"));
 #[cfg(target_arch = "riscv32")]
 const MAX_BRIGHTNESS: u8 = env_u8(env!("MAX_BRIGHTNESS"));
 #[cfg(target_arch = "riscv32")]
-const TEST_GRID_SECS: u16 = env_u16(env!("TEST_GRID_SECS"));
+const SMILE_SECS: u16 = env_u16(env!("SMILE_SECS"));
 #[cfg(target_arch = "riscv32")]
 const DRIVER_GATE: bool = env_bool(env!("DRIVER_GATE"));
 #[cfg(target_arch = "riscv32")]
@@ -152,7 +151,7 @@ const WIFI_CREDENTIALS_SET: bool = !WIFI_SSID.is_empty() && !WIFI_PASS.is_empty(
 const PIXELS: usize = MATRIX_W as usize * MATRIX_H as usize;
 
 // Такт обновления кадров, мс: около 30 кадров/с — частые записи греют гейт
-// драйвера, для сетки точность не критична.
+// драйвера, для приветствия точность не критична.
 #[cfg(target_arch = "riscv32")]
 const FRAME_TICK_MS: u32 = 33;
 
@@ -315,7 +314,7 @@ fn init_strip_driver(
     })
 }
 
-/// Жизненный цикл Ленты: тестовая сетка Раскладки, затем гейт драйвера или
+/// Жизненный цикл Ленты: приветствие-смайл, затем гейт драйвера или
 /// офлайн-гирлянда — Реестр эффектов под управлением кнопки. Отдельная
 /// embassy-задача: её фьючерс статический (bss), стек `main` не несёт ни
 /// драйвера, ни буферов кадра.
@@ -340,15 +339,13 @@ async fn strip_task(
     let mut outgoing_buffer = [garland_core::Rgb8::BLACK; PIXELS];
     let mut strip_buffer = [RGB8::default(); PIXELS];
 
-    // Фаза 1: тестовая сетка Раскладки.
-    info!(
-        "Тестовая сетка: {TEST_GRID_SECS} с, бегунок — порядок змейки, красный Пиксель 0 — стартовый угол"
-    );
-    let grid_end_ms = u32::from(TEST_GRID_SECS) * MS_PER_SEC;
+    // Фаза 1: приветствие — улыбающийся смайл с моргающими глазами.
+    info!("Смайл: {SMILE_SECS} с");
+    let smile_end_ms = u32::from(SMILE_SECS) * MS_PER_SEC;
     let mut elapsed_ms: u32 = 0;
-    while elapsed_ms < grid_end_ms {
+    while elapsed_ms < smile_end_ms {
         let mut frame = next_frame!(frame_buffer);
-        diag::test_grid(&mut frame, &mapping, elapsed_ms);
+        diag::smile(&mut frame, &mapping, elapsed_ms);
         show(led.as_mut(), &mut strip_buffer, &frame, &mapping).await;
         Timer::after(Duration::from_millis(u64::from(FRAME_TICK_MS))).await;
         elapsed_ms += FRAME_TICK_MS;
@@ -384,13 +381,13 @@ async fn strip_task(
     let button_gpio = Input::new(button_pin, InputConfig::default().with_pull(Pull::Up));
     let mut button = Button::new();
     let mut nvs = memory::NvsMemory::new(flash).await;
-    let mut garland = Garland::new(REGISTRY, mapping, grid_end_ms, &mut nvs);
+    let mut garland = Garland::new(REGISTRY, mapping, smile_end_ms, &mut nvs);
     info!(
         "Офлайн-гирлянда: эффектов в Реестре — {}, кнопка на GPIO{BUTTON_PIN}, сохранённый эффект — «{}»",
         REGISTRY.len(),
         garland.effect_name()
     );
-    let mut now_ms = grid_end_ms;
+    let mut now_ms = smile_end_ms;
     loop {
         if let Some(event) = button.update(button_gpio.is_low(), now_ms) {
             garland.press(event, now_ms);
