@@ -13,4 +13,4 @@ pub mod mapping;
 pub use color::{Hsv8, MAX_ALPHA, Rgb8, blend, gamma, gamma8, hsv_to_rgb};
 pub use effect::Effect;
 pub use frame::Frame;
-pub use mapping::{Corner, Layout, Mapping};
+pub use mapping::{Corner, Layout, Mapping, ParseError};

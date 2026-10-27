@@ -152,4 +152,32 @@ mod tests {
 
         rainbow.render(&mut frame, 0);
     }
+
+    /// Вырожденная Матрица 1×1 — единственный Пиксель: без паники, тон
+    /// нулевой фазы (вдоль Ленты index·256/count = 0).
+    #[test]
+    fn single_pixel_frame_renders() {
+        let mapping = Mapping::new(1, 1, Layout::RowSerpentine, Corner::TopLeft);
+        let mut rainbow = Rainbow::new(mapping);
+        let mut buffer = [Rgb8::BLACK];
+        let mut frame = Frame::new(1, 1, &mut buffer).unwrap();
+
+        rainbow.render(&mut frame, 0);
+
+        assert_eq!(frame.pixels()[0], hue_color(0));
+    }
+
+    /// Шкала времени не переполняет u32: кадр на границе шкалы (почти
+    /// 49,7 суток) считается без паники и остаётся в полную яркость.
+    #[test]
+    fn elapsed_at_u32_max_does_not_overflow() {
+        let mapping = mapping();
+        let mut rainbow = Rainbow::new(mapping);
+        let mut buffer = [Rgb8::BLACK; 12];
+        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+
+        rainbow.render(&mut frame, u32::MAX);
+
+        assert!(frame.pixels().iter().all(|c| *c != Rgb8::BLACK));
+    }
 }

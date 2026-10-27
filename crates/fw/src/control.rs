@@ -18,7 +18,7 @@ use effect_rainbow::Rainbow;
 use effect_rings::Rings;
 use effect_solid::Solid;
 use effect_sparkle::Sparkle;
-use garland_core::{Effect, Frame, Mapping, Rgb8, blend};
+use garland_core::{Effect, Frame, MAX_ALPHA, Mapping, Rgb8, blend};
 
 /// Длительность кроссфейда смены эффектов, мс: ~0,8 с (канон WLED, спека
 /// Гирлянды); в течение кроссфейда рендерятся оба эффекта — уходящий
@@ -167,9 +167,12 @@ impl<'m> Garland<'m> {
                     let next = (self.current + 1) % self.registry.len();
                     self.current = next;
                     self.memory.save(next);
-                    if self.fading.is_some() {
+                    if self.fading_active(now_ms) {
                         self.pending = Some(next);
                     } else {
+                        // Просроченный, ещё не снятый рендером кроссфейд — не
+                        // источник снимка: смена сразу, без отложенного такта.
+                        self.fading = None;
                         self.start(next, now_ms);
                     }
                 }
@@ -180,6 +183,18 @@ impl<'m> Garland<'m> {
     /// Имя Текущего эффекта: в Покое — тот же, что будет после пробуждения.
     pub fn effect_name(&self) -> &'static str {
         self.registry[self.current].0
+    }
+
+    /// Идёт ли кроссфейд на момент `now_ms`: ещё не истёк по времени.
+    /// Единый предикат для `press` и `render`: иначе в такте, где кроссфейд
+    /// уже истёк, но ещё не снят рендером, `press` отложил бы переключение
+    /// в `pending`, а рендер того же такта исполнил бы его мгновенно —
+    /// без снимка и без плавности.
+    fn fading_active(&self, now_ms: u32) -> bool {
+        matches!(
+            &self.fading,
+            Some(fade) if now_ms.wrapping_sub(fade.from_ms) < CROSSFADE_MS
+        )
     }
 
     /// Отрисовать Кадр на момент `now_ms`. В Покое Фреймбуфер полностью
@@ -202,10 +217,7 @@ impl<'m> Garland<'m> {
         // Отложенное переключение: источник нового кроссфейда — снимок
         // текущего вывода, чтобы альфа не прыгала с текущей на нулевую.
         if let Some(index) = self.pending.take() {
-            let fading = matches!(
-                &self.fading,
-                Some(fade) if now_ms.wrapping_sub(fade.from_ms) < CROSSFADE_MS
-            );
+            let fading = self.fading_active(now_ms);
             if fading {
                 self.blend_frame(frame, outgoing, now_ms);
                 self.fading = Some(FadeOut {
@@ -249,7 +261,7 @@ impl<'m> Garland<'m> {
         self.effect
             .render(frame, now_ms.wrapping_sub(self.started_ms));
         let progress = now_ms.wrapping_sub(fade.from_ms);
-        let alpha = (progress * u32::from(garland_core::MAX_ALPHA) / CROSSFADE_MS) as u16;
+        let alpha = (progress * u32::from(MAX_ALPHA) / CROSSFADE_MS) as u16;
         for (dst, src) in frame.pixels_mut().iter_mut().zip(outgoing.pixels()) {
             *dst = blend(*src, *dst, alpha);
         }
@@ -685,6 +697,61 @@ mod tests {
             frame.pixels(),
             registry_frame(1, &mapping, 2_000 - 200).as_ref(),
             "после пробуждения — чистый Текущий эффект"
+        );
+    }
+
+    /// Нажатие в такте, где кроссфейд истёк по времени, но ещё не снят
+    /// рендером: машина начинает свежий кроссфейд (на Ленте — уходящий
+    /// эффект), а не исполняет отложенное мгновенное переключение.
+    #[test]
+    fn press_on_expired_fade_starts_fresh_fade() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        garland.press(ButtonEvent::ShortPress, 200); // статичный → радуга
+        // Такт ровно на границе: 200 + 800 − 200 = 800 — кроссфейд истёк,
+        // рендер его ещё не снимал.
+        garland.press(ButtonEvent::ShortPress, 200 + CROSSFADE_MS); // радуга → кольца
+
+        let (mut frame, mut outgoing) = frame_pair();
+        garland.render(&mut frame, &mut outgoing, 200 + CROSSFADE_MS);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, CROSSFADE_MS).as_ref(),
+            "истёкший кроссфейд стартует новый: на Ленте — уходящий Эффект"
+        );
+    }
+
+    /// Кроссфейд через заворот счётчика времени `u32` (49 суток работы):
+    /// смешение посреди кроссфейда и его завершение не ломаются на границе.
+    #[test]
+    fn crossfade_survives_u32_wrap() {
+        let mapping = mapping();
+        let mut memory = FakeMemory(None);
+        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+        let start = u32::MAX - 400;
+        garland.press(ButtonEvent::ShortPress, start); // статичный → радуга
+        let (mut frame, mut outgoing) = frame_pair();
+        garland.render(&mut frame, &mut outgoing, start);
+
+        // 100 мс после заворота: кроссфейд идёт (501 из 800) — поканальная
+        // смесь уходящего и Текущего без выбросов.
+        garland.render(&mut frame, &mut outgoing, 100);
+        let old = registry_frame(0, &mapping, 100);
+        let new = registry_frame(1, &mapping, 501);
+        for (i, pixel) in frame.pixels().iter().enumerate() {
+            assert!(
+                between(old[i], new[i], *pixel),
+                "Пиксель {i} вне кроссфейда после заворота счётчика"
+            );
+        }
+
+        // Кроссфейд завершается: на Ленте — чистый Текущий эффект.
+        garland.render(&mut frame, &mut outgoing, 401);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(1, &mapping, 802).as_ref(),
+            "кроссфейд завершается после заворота счётчика"
         );
     }
 }

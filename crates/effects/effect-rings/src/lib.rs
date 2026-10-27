@@ -184,4 +184,30 @@ mod tests {
 
         assert_eq!(frame.get(2, 2), Some(Rgb8 { r: 255, g: 0, b: 0 }));
     }
+
+    /// Вырожденная Матрица 1×1 — единственный Пиксель в центре: без паники,
+    /// кадр заполнен (расстояние 0 не делит на ноль).
+    #[test]
+    fn single_pixel_matrix_still_rings() {
+        let mut rings = Rings;
+        let mut buffer = [Rgb8::BLACK];
+        let mut frame = Frame::new(1, 1, &mut buffer).unwrap();
+
+        rings.render(&mut frame, 0);
+
+        assert!(frame.pixels().iter().all(|c| *c != Rgb8::BLACK));
+    }
+
+    /// Шкала времени не переполняет u32: кадр на границе шкалы считается
+    /// без паники и остаётся живым (не чёрным).
+    #[test]
+    fn elapsed_at_u32_max_does_not_overflow() {
+        let mut rings = Rings;
+        let mut buffer = [Rgb8::BLACK; 64];
+        let mut frame = Frame::new(8, 8, &mut buffer).unwrap();
+
+        rings.render(&mut frame, u32::MAX);
+
+        assert!(frame.pixels().iter().any(|c| *c != Rgb8::BLACK));
+    }
 }

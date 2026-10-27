@@ -59,4 +59,14 @@ mod tests {
 
         assert_eq!(early, late);
     }
+
+    /// Вырожденный пустой Кадр (0×0) — noop по построению: не паникует.
+    #[test]
+    fn empty_frame_is_a_noop() {
+        let mut solid = Solid;
+        let mut buffer = [];
+        let mut frame = Frame::new(0, 0, &mut buffer).unwrap();
+
+        solid.render(&mut frame, 0);
+    }
 }

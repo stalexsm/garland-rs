@@ -21,6 +21,9 @@ pub enum Request<'a> {
         /// Путь запроса (`/`, `/ota`, …).
         path: &'a str,
     },
+    /// `POST /ota` с чужого Origin: похоже на CSRF — страница из интернета
+    /// пытается вслепую прошить Гирлянду.
+    CrossOrigin,
     /// Начало потока не разбирается как HTTP-запрос.
     Malformed,
 }
@@ -93,6 +96,10 @@ pub const RESPONSE_NOT_FOUND: &str =
 pub const RESPONSE_BAD_REQUEST: &str =
     "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 
+/// Ответ на корректный запрос с чужого Origin (похоже на CSRF).
+pub const RESPONSE_FORBIDDEN: &str =
+    "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+
 /// Начало plain-ответа до статуса (собирается [`write_plain`] — длины тела
 /// считаются, ручных Content-Length нет).
 const PLAIN_STATUS_HEAD: &str = "HTTP/1.1 ";
@@ -154,16 +161,23 @@ pub fn parse_request(buf: &[u8]) -> Option<Request<'_>> {
 fn route<'a>(method: &'a str, path: &'a str, head: &'a [u8]) -> Option<Request<'a>> {
     Some(match (method, path) {
         ("GET", "/") => Request::GetRoot,
-        ("POST", "/ota") => match content_length(head) {
-            Some(content_length) => Request::PostOta { content_length },
-            None => Request::Malformed,
-        },
+        ("POST", "/ota") => {
+            if cross_origin(head) {
+                Request::CrossOrigin
+            } else {
+                match content_length(head) {
+                    Some(content_length) => Request::PostOta { content_length },
+                    None => Request::Malformed,
+                }
+            }
+        }
         _ => Request::Other { method, path },
     })
 }
 
-/// Значение заголовка Content-Length; `None` — заголовка нет или он не число.
-fn content_length(head: &[u8]) -> Option<usize> {
+/// Значение заголовка по имени (регистр букв не важен); `None` — заголовка
+/// нет.
+fn header_value<'a>(head: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
     // Сканирование по индексам, без итератора split: кадр разбора запроса
     // держится ниже порога large_stack_frames (канон find_head_end).
     // Последняя строка может быть без \n (хвост перед \r\n\r\n) — тоже строка.
@@ -189,11 +203,36 @@ fn content_length(head: &[u8]) -> Option<usize> {
         let Some(colon) = line.iter().position(|&b| b == b':') else {
             continue;
         };
-        if !line[..colon].eq_ignore_ascii_case(b"Content-Length") {
+        if !line[..colon].eq_ignore_ascii_case(name) {
             continue;
         }
-        let value = core::str::from_utf8(&line[colon + 1..]).ok()?;
-        return decimal_usize(value.trim().as_bytes());
+        // Пробелы вокруг значения (HTTP OWS) — не часть значения.
+        return Some(line[colon + 1..].trim_ascii());
+    }
+}
+
+/// Значение заголовка Content-Length; `None` — заголовка нет или он не число.
+fn content_length(head: &[u8]) -> Option<usize> {
+    let value = core::str::from_utf8(header_value(head, b"Content-Length")?).ok()?;
+    decimal_usize(value.as_bytes())
+}
+
+/// Похоже ли на запрос с чужой страницы (CSRF): браузерный `fetch` всегда
+/// шлёт Origin, и у cross-origin запроса он не совпадает с Host; curl Origin
+/// не шлёт вовсе. Отклонение запрещает странице из интернета вслепую
+/// прошивать Гирлянду. Страница самой Гирлянды — same-origin (сервер только
+/// http), поэтому сравнение с префиксом `http://` — без ложных срабатываний.
+fn cross_origin(head: &[u8]) -> bool {
+    let Some(origin) = header_value(head, b"Origin") else {
+        return false;
+    };
+    let Some(host) = header_value(head, b"Host") else {
+        return true;
+    };
+    match (core::str::from_utf8(origin), core::str::from_utf8(host)) {
+        (Ok(origin), Ok(host)) => origin.strip_prefix("http://") != Some(host),
+        // Origin/Host не текст — запрос не от браузера на страницу Гирлянды.
+        _ => true,
     }
 }
 
@@ -309,6 +348,46 @@ mod tests {
     }
 
     #[test]
+    fn post_ota_cross_origin_is_rejected() {
+        // CSRF: страница из интернета пытается прошить Гирлянду вслепую.
+        assert_eq!(
+            parse_request(
+                b"POST /ota HTTP/1.1\r\nHost: 192.168.4.1\r\nOrigin: http://evil.example\r\nContent-Length: 4\r\n\r\n"
+            ),
+            Some(Request::CrossOrigin)
+        );
+        // Origin с тем же адресом, но другим портом — тоже чужой.
+        assert_eq!(
+            parse_request(
+                b"POST /ota HTTP/1.1\r\nHost: 192.168.4.1\r\nOrigin: http://192.168.4.1:8080\r\nContent-Length: 4\r\n\r\n"
+            ),
+            Some(Request::CrossOrigin)
+        );
+        // Origin без Host — отклоняем: обычный браузер Host всегда шлёт.
+        assert_eq!(
+            parse_request(b"POST /ota HTTP/1.1\r\nOrigin: http://g\r\nContent-Length: 4\r\n\r\n"),
+            Some(Request::CrossOrigin)
+        );
+    }
+
+    #[test]
+    fn post_ota_same_origin_and_curl_are_accepted() {
+        // Страница самой Гирлянды: Origin совпадает с Host (браузер не указывает
+        // порт по умолчанию — сервер на 80-м).
+        assert_eq!(
+            parse_request(
+                b"POST /ota HTTP/1.1\r\nHost: 192.168.4.1\r\nOrigin: http://192.168.4.1\r\nContent-Length: 4\r\n\r\n"
+            ),
+            Some(Request::PostOta { content_length: 4 })
+        );
+        // curl Origin не шлёт — не браузер, CSRF невозможен.
+        assert_eq!(
+            parse_request(b"POST /ota HTTP/1.1\r\nHost: g\r\nContent-Length: 4\r\n\r\n"),
+            Some(Request::PostOta { content_length: 4 })
+        );
+    }
+
+    #[test]
     fn body_start_points_past_head() {
         let bytes = b"POST /ota HTTP/1.1\r\nContent-Length: 4\r\n\r\n\xe9\x00";
         assert!(head_complete(bytes));
@@ -369,7 +448,7 @@ mod tests {
 
     #[test]
     fn rejects_are_well_formed() {
-        for response in [RESPONSE_NOT_FOUND, RESPONSE_BAD_REQUEST] {
+        for response in [RESPONSE_NOT_FOUND, RESPONSE_BAD_REQUEST, RESPONSE_FORBIDDEN] {
             let (head, body) = response.split_once("\r\n\r\n").expect("конец заголовка");
             let length = head
                 .lines()
@@ -379,5 +458,6 @@ mod tests {
         }
         assert!(RESPONSE_NOT_FOUND.starts_with("HTTP/1.1 404 Not Found\r\n"));
         assert!(RESPONSE_BAD_REQUEST.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert!(RESPONSE_FORBIDDEN.starts_with("HTTP/1.1 403 Forbidden\r\n"));
     }
 }
