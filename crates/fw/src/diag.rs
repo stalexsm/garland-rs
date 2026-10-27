@@ -42,13 +42,28 @@ const SMILE_SPRITE: [[bool; SMILE_SIDE as usize]; SMILE_SIDE as usize] = [
     [false, false, true, true, true, true, false, false],
 ];
 
-/// Рисует спрайт смайла левым верхним углом в (x0, y0); Пиксели за
-/// пределами Фреймбуфера срезаются.
-fn blit_smile(frame: &mut Frame, x0: u16, y0: u16) {
+/// Во сколько раз смайл крупнее спрайта на этой Матрице: целочисленный
+/// масштаб по меньшей стороне, минимум единица — спрайт никогда не сжимается.
+fn scale_of(mapping: &Mapping) -> u16 {
+    (mapping.width().min(mapping.height()) / SMILE_SIDE).max(1)
+}
+
+/// Рисует спрайт смайла левым верхним углом в (x0, y0), каждый Пиксель —
+/// блок `scale`×`scale`; Пиксели за пределами Фреймбуфера срезаются.
+fn blit_smile(frame: &mut Frame, x0: u16, y0: u16, scale: u16) {
     for (row, line) in SMILE_SPRITE.iter().enumerate() {
         for (col, lit) in line.iter().enumerate() {
-            if *lit {
-                frame.set(x0 + col as u16, y0 + row as u16, SMILE_FACE);
+            if !*lit {
+                continue;
+            }
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    frame.set(
+                        x0 + col as u16 * scale + dx,
+                        y0 + row as u16 * scale + dy,
+                        SMILE_FACE,
+                    );
+                }
             }
         }
     }
@@ -72,19 +87,31 @@ const SMILE_BLINK_PERIOD_MS: u32 = 3000;
 const SMILE_BLINK_MS: u32 = 200;
 
 /// Кадр приветствия на старте в момент `elapsed_ms`: жёлтый улыбающийся
-/// смайл по центру Матрицы, глаза и улыбка — тёмные Пиксели лица. Раз в
+/// смайл по центру Матрицы, глаза и улыбка — тёмные Пиксели лица. На
+/// Матрице крупнее спрайта смайл растёт целым числом раз по меньшей
+/// стороне. Раз в
 /// [`SMILE_BLINK_PERIOD_MS`] глаза на [`SMILE_BLINK_MS`] вспыхивают белым.
 /// Прошивка держит смайл `SMILE_SECS` секунд, затем включает Гирлянду.
 pub fn smile(frame: &mut Frame, mapping: &Mapping, elapsed_ms: u32) {
     frame.fill(Rgb8::BLACK);
-    let x0 = mapping.width().saturating_sub(SMILE_SIDE) / 2;
-    let y0 = mapping.height().saturating_sub(SMILE_SIDE) / 2;
-    blit_smile(frame, x0, y0);
+    let scale = scale_of(mapping);
+    let side = SMILE_SIDE * scale;
+    let x0 = mapping.width().saturating_sub(side) / 2;
+    let y0 = mapping.height().saturating_sub(side) / 2;
+    blit_smile(frame, x0, y0, scale);
     let eyes_closed = elapsed_ms % SMILE_BLINK_PERIOD_MS < SMILE_BLINK_MS;
     if eyes_closed {
         // Глаза — дырки в спрайте: при моргании вспыхивают белым.
         for (ex, ey) in SMILE_EYES {
-            frame.set(x0 + ex, y0 + ey, SMILE_BLINK_COLOR);
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    frame.set(
+                        x0 + ex * scale + dx,
+                        y0 + ey * scale + dy,
+                        SMILE_BLINK_COLOR,
+                    );
+                }
+            }
         }
     }
 }
@@ -243,6 +270,70 @@ mod tests {
         // Новый цикл — глаза снова вспыхивают белым.
         smile(&mut frame, &mapping, SMILE_BLINK_PERIOD_MS);
         assert_eq!(frame.get(2, 2), Some(white));
+    }
+
+    /// На крупной Матрице смайл растёт целым числом раз: спрайт 8×8 с
+    /// масштабом 2 занимает 16×16, каждый Пиксель лица — блок 2×2.
+    #[test]
+    fn smile_scales_up_on_a_bigger_matrix() {
+        let mapping = Mapping::new(16, 16, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 256];
+        let mut frame = Frame::new(16, 16, &mut buffer).unwrap();
+
+        // Открытые глаза: блоки глаз тёмные, лицо вокруг жёлтое.
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
+
+        let face = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        let white = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        // Угол Матрицы тёмный: спрайт при масштабе 2 занимает всё окно,
+        // но его тёмные углы остаются тёмными.
+        assert_eq!(frame.get(0, 0), Some(Rgb8::BLACK));
+        // Пиксель лба (2, 0) — блок 2×2 в (4..5, 0..1).
+        assert_eq!(frame.get(4, 0), Some(face));
+        assert_eq!(frame.get(5, 1), Some(face));
+        assert_eq!(frame.get(3, 0), Some(Rgb8::BLACK));
+        // Открытый глаз (2, 2) — тёмный блок 2×2 в (4..5, 4..5).
+        assert_eq!(frame.get(4, 4), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(5, 5), Some(Rgb8::BLACK));
+        // Щека под глазом (2, 3) — жёлтый блок.
+        assert_eq!(frame.get(4, 6), Some(face));
+
+        // Моргание: блоки глаз вспыхивают белым.
+        smile(&mut frame, &mapping, 0);
+        assert_eq!(frame.get(4, 4), Some(white));
+        assert_eq!(frame.get(5, 5), Some(white));
+    }
+
+    /// На прямоугольной Матрице смайл квадратный (масштаб по меньшей
+    /// стороне) и центрируется по обеим осям независимо.
+    #[test]
+    fn smile_centers_on_a_rectangular_matrix() {
+        // Меньшая сторона 12: масштаб 1, поля 6 по X и 2 по Y.
+        let mapping = Mapping::new(20, 12, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 240];
+        let mut frame = Frame::new(20, 12, &mut buffer).unwrap();
+
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
+
+        let face = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        // Верх лба спрайта (2, 0) — в (8, 2).
+        assert_eq!(frame.get(8, 2), Some(face));
+        assert_eq!(frame.get(7, 2), Some(Rgb8::BLACK));
+        // Правое поле и строка под подбородком пустые.
+        assert_eq!(frame.get(14, 2), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(9, 10), Some(Rgb8::BLACK));
     }
 
     /// Blink: первая половина периода — полный цвет, вторая — чёрный,
