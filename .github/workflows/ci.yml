@@ -1,0 +1,186 @@
+# Гейты CI/CD для PR. Адаптация waltrail (.github/workflows/ci.yml).
+#
+# Обязательные проверки (гейты), джоба gates — зелёная только когда все зелёные:
+#   fmt           — форматирование (cargo fmt --check);
+#   msrv          — cargo check на заявленном MSRV (rust-version в
+#                   workspace.package); `cargo +1.95` перебивает
+#                   rust-toolchain.toml, иначе проверялся бы stable;
+#   clippy        — линтер хоста без предупреждений
+#                   (cargo clippy --all --all-targets -- -D warnings);
+#   clippy-target — линтер целевой сборки прошивки: esp-крейты под
+#                   cfg(target_arch = "riscv32") на хосте не собираются вовсе,
+#                   хост-линтер их не видит; target и rustflags берутся из
+#                   crates/fw/.cargo/config.toml; --all-targets под таргетом
+#                   неприменим (крейта test не существует), поэтому --bins;
+#   test          — все хост-тесты workspace (в отличие от waltrail, БД и
+#                   compose не нужны);
+#   skylos        — мёртвый код, секреты, опасные конструкции и непиненные
+#                   экшены workflow (SKY-D292); версия пинится;
+#   semgrep       — SAST по правилам p/default (Semgrep Community Edition,
+#                   без токена).
+#
+# Не переносилось из waltrail: docker (нет Dockerfile) и cargo-deny
+# (нет deny.toml) — завести, когда появятся Dockerfile/deny.toml.
+#
+# В branch protection достаточно одной required check — «gates»: новые джобы
+# добавляются в needs, настройки защиты не меняются.
+#
+# Actions запинены на полные commit SHA (проверяется гейтом skylos, SKY-D292);
+# пины обновляются вручную. Несемверные пины dtolnay/rust-toolchain («stable»,
+# «1.95 (MSRV)») не несут версии в ref — обновляются вместе с бампом экшена.
+#
+# У каждой джобы — timeout-minutes: верхний предел времени не даёт зависшему
+# шагу съедать раннер до дефолтных 6 часов.
+
+name: CI
+
+# Гейты гоняются только на PR: GitHub проверяет merge-превью коммит, то есть
+# ровно то, что войдёт в main; повторный полный прогон на main после мерджа
+# ничего не добавляет. workflow_dispatch — ручной прогон, когда нужен.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Для одного PR — одна активная сборка: новая отменяет предыдущую
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt
+      - name: Форматирование
+        run: cargo fmt --check
+
+  msrv:
+    # Заявленный MSRV — не мёртвый конфиг: cargo check на минимальном
+    # тулчейне из rust-version. `cargo +1.95` перебивает rust-toolchain.toml
+    # (channel stable). Отдельный кеш rust-cache — чтобы прогрев MSRV-тулчейна
+    # не перетирал кеш стабильного (ключ по умолчанию — jobId).
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # 1.95 (MSRV)
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: cargo check на MSRV
+        run: cargo +1.95 check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Линтер (предупреждения запрещены)
+        run: cargo clippy --all --all-targets -- -D warnings
+
+  clippy-target:
+    # Гейт целевой сборки прошивки: без него зелёный хост-CI ничего не говорит
+    # о сборке под железо. См. docs/agents/gates.md («Гейт под target прошивки»).
+    name: clippy-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rust-src
+          targets: riscv32imac-unknown-none-elf
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Линтер прошивки (riscv32imac-unknown-none-elf)
+        working-directory: crates/fw
+        run: cargo clippy --bins -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Тесты workspace
+        run: cargo test --workspace
+
+  skylos:
+    # Мёртвый код, секреты, опасные конструкции и пины экшенов в workflow.
+    # Подавления правил — в skylos.toml: единственное исключение — SKY-D260
+    # (гомоглифы), ложняки на русскоязычном репо.
+    name: skylos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Установка skylos
+        run: pip install skylos==4.50.1
+      - name: Скан skylos (гейт)
+        run: >
+          skylos . --secrets --danger --gate --config-file skylos.toml
+          --exclude target
+
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установка semgrep (Community Edition)
+        run: pipx install semgrep==1.181.0
+      - name: SAST-скан semgrep (гейт)
+        run: semgrep scan --config p/default --error --metrics=off
+
+  gates:
+    # Сводный гейт для branch protection: required status check «gates»
+    name: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [fmt, msrv, clippy, clippy-target, test, skylos, semgrep]
+    if: always()
+    steps:
+      - name: Все гейты зелёные
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "Результаты гейтов: ${{ toJson(needs.*.result) }}"
+          exit 1
+      - name: Итог
+        run: |
+          echo "Все гейты пройдены: ${{ toJson(needs.*.result) }}"

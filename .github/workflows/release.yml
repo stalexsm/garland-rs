@@ -1,0 +1,76 @@
+# Релиз по тегу. Образец — CI.yml из report_core (джоба Release).
+#
+# Процесс релиза (docs/agents/git-workflow.md):
+#   1. git-cliff --unreleased --tag X.Y.Z --prepend CHANGELOG.md;
+#   2. релизный коммит `chore(release): prepare for X.Y.Z` в main (через PR);
+#   3. тег X.Y.Z (без префикса) на релизном коммите.
+#
+# Workflow по этому тегу:
+#   - проверяет, что тег указывает на коммит main (теги вне main отклоняются);
+#   - вырезает секцию версии из CHANGELOG.md — она попадает туда на шаге 1,
+#     поэтому в дереве тега гарантированно есть;
+#   - создаёт GitHub Release: имя vX.Y.Z (с префиксом v), тело — из CHANGELOG.
+#
+# Идемпотентно: существующий релиз редактируется, а не падает.
+# Артефакты не публикуются: .bin прошивки льётся на железо локально (espflash).
+
+name: Release
+
+# Теги релиза — семвер без префикса; теги с v-префиксом не по конвенции и не
+# запускают релиз.
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # contents: write — только джобе, создающей релиз (SKY-D291); остальные
+    # джобы, если появятся, наследуют read-only workflow-уровня
+    permissions:
+      contents: write
+    steps:
+      # Полная история — ради проверки, что тег на main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Тег указывает на коммит main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Тег ${GITHUB_REF_NAME} указывает на коммит вне main — релиз отклонён" >&2
+            exit 1
+          }
+
+      - name: Описание релиза — секция версии из CHANGELOG.md
+        run: |
+          awk -v header="## [${GITHUB_REF_NAME}]" '
+            index($0, header) == 1 { found = 1; print; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          [ -s release_notes.md ] || {
+            echo "Секция ${GITHUB_REF_NAME} не найдена в CHANGELOG.md — релизный коммит делается git-cliff --unreleased --tag ${GITHUB_REF_NAME} --prepend CHANGELOG.md" >&2
+            exit 1
+          }
+
+      - name: Создание GitHub Release (vX.Y.Z)
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            echo "Релиз ${GITHUB_REF_NAME} уже существует — обновляю имя и описание"
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "v${GITHUB_REF_NAME}" \
+              --notes-file release_notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "v${GITHUB_REF_NAME}" \
+              --notes-file release_notes.md
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
