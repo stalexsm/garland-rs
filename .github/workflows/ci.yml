@@ -12,6 +12,9 @@
 #                   хост-линтер их не видит; target и rustflags берутся из
 #                   crates/fw/.cargo/config.toml; --all-targets под таргетом
 #                   неприменим (крейта test не существует), поэтому --bins;
+#   build         — сборка образа Прошивки (garland.bin) по рецепту README:
+#                   подтверждает, что PR собирается под железо целиком, а не
+#                   только линтуется (release-профиль, влезание в OTA-раздел);
 #   test          — все хост-тесты workspace (в отличие от waltrail, БД и
 #                   compose не нужны);
 #   skylos        — мёртвый код, секреты, опасные конструкции и непиненные
@@ -121,6 +124,35 @@ jobs:
         working-directory: crates/fw
         run: cargo clippy --bins -- -D warnings
 
+  build:
+    # Сборка образа Прошивки на каждый коммит PR. Рецепт — README («OTA-
+    # обновление»): ELF release-сборки → espflash save-image. Сборка без
+    # переменных окружения: build.rs подставляет пустые дефолты WIFI_SSID,
+    # WIFI_PASS и OTA_PASS — секретов в образе нет; свой образ каждый собирает
+    # сам (переменные вшиваются в бинарь при сборке), поэтому образ никуда не
+    # выкладывается — джоба проверяет только собираемость. Версия espflash
+    # пинится ради воспроизводимости образа.
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rust-src
+          targets: riscv32imac-unknown-none-elf
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Установка espflash
+        run: cargo install espflash --locked --version 4.3.0
+      - name: Сборка образа Прошивки (garland.bin)
+        working-directory: crates/fw
+        run: |
+          cargo build --release
+          espflash save-image --chip esp32c6 \
+            ../../target/riscv32imac-unknown-none-elf/release/fw garland.bin
+
   test:
     name: test
     runs-on: ubuntu-latest
@@ -173,7 +205,7 @@ jobs:
     name: gates
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [fmt, msrv, clippy, clippy-target, test, skylos, semgrep]
+    needs: [fmt, msrv, clippy, clippy-target, build, test, skylos, semgrep]
     if: always()
     steps:
       - name: Все гейты зелёные
