@@ -18,7 +18,7 @@ pub enum ButtonEvent {
 
 /// Окно антидребезга, мс: сырой переход подтверждается не раньше, чем через
 /// это время после предыдущего подтверждённого; заведомо шире дребезга
-/// механического контакта и больше двух тактов опроса Прошивки (33 мс).
+/// механического контакта и больше такта опроса Прошивки (33 мс).
 const DEBOUNCE_MS: u32 = 50;
 
 /// Порог длинного нажатия, мс: ~0,8 с, как длительность кроссфейда в спеке.
@@ -185,5 +185,29 @@ mod tests {
             }
         }
         assert_eq!(longs, 1);
+    }
+
+    /// Нажатие через заворот счётчика времени `u32` (49 суток работы):
+    /// подтверждение зажатия у границы и порог длинного после заворота
+    /// считаются по wrapping-арифметике.
+    #[test]
+    fn presses_across_u32_wrap_keep_working() {
+        let mut button = Button::new();
+        let edge = u32::MAX - 1;
+
+        // Зажатие у границы счётчика: расстояния считаются wrapping'ом.
+        assert_eq!(button.update(false, edge - 40), None);
+        assert_eq!(button.update(true, edge), None);
+        // Порог длинного нажатия достигается уже после заворота нуля.
+        assert_eq!(button.update(true, edge.wrapping_add(400)), None);
+        assert_eq!(
+            button.update(true, edge.wrapping_add(LONG_PRESS_MS)),
+            Some(ButtonEvent::LongPress)
+        );
+        // Отпускание после заворота подтверждается, событий больше нет.
+        assert_eq!(
+            button.update(false, edge.wrapping_add(LONG_PRESS_MS + 100)),
+            None
+        );
     }
 }
