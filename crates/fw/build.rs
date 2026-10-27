@@ -1,4 +1,7 @@
 fn main() {
+    // Правка самого скрипта (например, дефолтов) перезапускает сборку —
+    // без этого прошивка соберётся со старыми значениями до cargo clean.
+    println!("cargo:rerun-if-changed=build.rs");
     build_config();
     // Линкерные скрипты esp-hal — только под target прошивки; на хосте они
     // ломают сборку обычным cc.
@@ -54,7 +57,9 @@ fn build_config() {
 
 fn linker_be_nice() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
+    // Скрипту нужны и вид ошибки, и символ: вызов с меньшим числом аргументов
+    // обработке не подлежит.
+    if args.len() > 2 {
         let kind = &args[1];
         let what = &args[2];
 

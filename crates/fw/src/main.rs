@@ -217,6 +217,8 @@ use esp_hal::rmt::Rmt;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::rng::Rng;
 #[cfg(target_arch = "riscv32")]
+use esp_hal::system::software_reset;
+#[cfg(target_arch = "riscv32")]
 use esp_hal::time::Rate;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::timer::timg::TimerGroup;
@@ -235,7 +237,7 @@ use alloc::boxed::Box;
 #[cfg(target_arch = "riscv32")]
 use garland_core::{Corner, Frame, Layout, Mapping};
 #[cfg(target_arch = "riscv32")]
-use log::{info, warn};
+use log::{error, info, warn};
 #[cfg(target_arch = "riscv32")]
 use smart_leds::{RGB8, SmartLedsWriteAsync};
 
@@ -263,9 +265,13 @@ async fn show(
             b: color.b,
         };
     }
-    led.write(strip.iter().copied())
-        .await
-        .expect("запись Ленты не удалась");
+    // Ошибка RMT не паникует: паника в задаче вешает устройство на застывшем
+    // кадре без самовосстановления; перезапуск поднимает Гирлянду в тестовую
+    // сетку.
+    if let Err(e) = led.write(strip.iter().copied()).await {
+        error!("запись Ленты не удалась: {e:?} — перезапуск");
+        software_reset();
+    }
 }
 
 /// Кадр на Матрице: возвращает Фреймбуфер, привязанный к срезу `frame_buffer`.
@@ -468,9 +474,14 @@ async fn main(spawner: Spawner) -> ! {
         GPIO30,
         ..
     } = peripherals;
-    // Конфликт пинов ловится на сборке: оба номера известны компилятору.
+    // Конфликт и диапазон пинов ловятся на сборке: оба номера известны
+    // компилятору — мусор в конфиге ломает сборку, а не старт.
     const {
         assert!(LED_PIN != BUTTON_PIN, "LED_PIN и BUTTON_PIN совпадают");
+        assert!(
+            LED_PIN <= 30 && BUTTON_PIN <= 30,
+            "номер Пина вне диапазона ESP32-C6 (0..=30)"
+        );
     }
     let mut pins = [
         GPIO0.degrade(),
