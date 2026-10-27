@@ -340,7 +340,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "effect-precipitation"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
 name = "effect-rainbow"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-rings"
 version = "0.1.0"
 dependencies = [
  "garland-core",
@@ -1194,7 +1208,9 @@ dependencies = [
 name = "fw"
 version = "0.1.0"
 dependencies = [
+ "effect-precipitation",
  "effect-rainbow",
+ "effect-rings",
  "effect-solid",
  "embassy-embedded-hal",
  "embassy-executor",
