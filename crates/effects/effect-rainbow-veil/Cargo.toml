@@ -1,0 +1,10 @@
+[package]
+name = "effect-rainbow-veil"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Аддон Гирлянды: радужные переливы"
+publish = false
+
+[dependencies]
+garland-core.workspace = true

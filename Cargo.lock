@@ -340,42 +340,84 @@ dependencies = [
 ]
 
 [[package]]
-name = "effect-precipitation"
+name = "effect-balls"
 version = "0.1.0"
 dependencies = [
  "garland-core",
 ]
 
 [[package]]
-name = "effect-pulse"
+name = "effect-clouds"
 version = "0.1.0"
 dependencies = [
  "garland-core",
 ]
 
 [[package]]
-name = "effect-rainbow"
+name = "effect-confetti"
 version = "0.1.0"
 dependencies = [
  "garland-core",
 ]
 
 [[package]]
-name = "effect-rings"
+name = "effect-fire"
 version = "0.1.0"
 dependencies = [
  "garland-core",
 ]
 
 [[package]]
-name = "effect-solid"
+name = "effect-lava"
 version = "0.1.0"
 dependencies = [
  "garland-core",
 ]
 
 [[package]]
-name = "effect-sparkle"
+name = "effect-matrix"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-plasma"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-rainbow-diag"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-rainbow-veil"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-snowfall"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-starfall"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-waves"
 version = "0.1.0"
 dependencies = [
  "garland-core",
@@ -1222,12 +1264,18 @@ dependencies = [
 name = "fw"
 version = "0.1.0"
 dependencies = [
- "effect-precipitation",
- "effect-pulse",
- "effect-rainbow",
- "effect-rings",
- "effect-solid",
- "effect-sparkle",
+ "effect-balls",
+ "effect-clouds",
+ "effect-confetti",
+ "effect-fire",
+ "effect-lava",
+ "effect-matrix",
+ "effect-plasma",
+ "effect-rainbow-diag",
+ "effect-rainbow-veil",
+ "effect-snowfall",
+ "effect-starfall",
+ "effect-waves",
  "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",

@@ -1,0 +1,10 @@
+[package]
+name = "effect-clouds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Аддон Гирлянды: облака"
+publish = false
+
+[dependencies]
+garland-core.workspace = true

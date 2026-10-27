@@ -8,16 +8,32 @@
 //! нажатие, Покой, восстановление питания» проверяются тестами на хосте
 //! на подставном хранилище и подставном времени.
 
+// Фабрики Реестра собирают Аддона в кадре стека (~12 КБ поля Эффекта)
+// перед переездом в Box — одноразово, в момент смены Эффекта; живёт всегда
+// ровно один экземпляр, embassy-задача Ленты выделяет свои кадры статически
+// (bss), стек Гирлянды при работе не растёт (см. прицельное разрешение
+// large_stack_frames в main.rs).
+#![allow(
+    clippy::large_stack_frames,
+    reason = "одноразовый кадр фабрики Аддона (~12 КБ поля) при переезде в Box"
+)]
+
 extern crate alloc;
 
 use crate::button::ButtonEvent;
 use alloc::boxed::Box;
-use effect_precipitation::Precipitation;
-use effect_pulse::Pulse;
-use effect_rainbow::Rainbow;
-use effect_rings::Rings;
-use effect_solid::Solid;
-use effect_sparkle::Sparkle;
+use effect_balls::Balls;
+use effect_clouds::Clouds;
+use effect_confetti::Confetti;
+use effect_fire::Fire;
+use effect_lava::Lava;
+use effect_matrix::Matrix;
+use effect_plasma::Plasma;
+use effect_rainbow_diag::RainbowDiag;
+use effect_rainbow_veil::RainbowVeil;
+use effect_snowfall::Snowfall;
+use effect_starfall::Starfall;
+use effect_waves::Waves;
 use garland_core::{Effect, Frame, MAX_ALPHA, Mapping, Rgb8, blend};
 
 /// Длительность кроссфейда смены эффектов, мс: ~0,8 с (канон WLED, спека
@@ -48,15 +64,29 @@ pub type RegistryEntry = (&'static str, Factory);
 /// Реестр эффектов Прошивки: имя и фабрика каждого Аддона; кнопка листает
 /// Реестр по кругу.
 pub static REGISTRY: &[RegistryEntry] = &[
-    ("Статичный цвет", |_| Box::new(Solid)),
-    ("Радуга по проводу", |mapping| {
-        Box::new(Rainbow::new(mapping))
+    ("Огонь", |mapping| Box::new(Fire::new(mapping))),
+    ("Снегопад", |mapping| {
+        Box::new(Snowfall::new(mapping))
     }),
-    ("Кольца и волны", |_mapping| Box::new(Rings)),
-    ("Дождь и снег", |_mapping| Box::new(Precipitation)),
-    ("Пульс", |_mapping| Box::new(Pulse)),
-    ("Мерцание-снежинки", |_mapping| {
-        Box::new(Sparkle)
+    ("Матрица", |mapping| Box::new(Matrix::new(mapping))),
+    ("Звездопад", |mapping| {
+        Box::new(Starfall::new(mapping))
+    }),
+    ("Конфетти", |mapping| {
+        Box::new(Confetti::new(mapping))
+    }),
+    ("Шарики", |mapping| Box::new(Balls::new(mapping))),
+    ("Синусоиды", |mapping| {
+        Box::new(Waves::new(mapping))
+    }),
+    ("Радуга диагональная", |mapping| {
+        Box::new(RainbowDiag::new(mapping))
+    }),
+    ("Лава", |mapping| Box::new(Lava::new(mapping))),
+    ("Облака", |mapping| Box::new(Clouds::new(mapping))),
+    ("Плазма", |mapping| Box::new(Plasma::new(mapping))),
+    ("Радужные переливы", |mapping| {
+        Box::new(RainbowVeil::new(mapping))
     }),
 ];
 
@@ -285,14 +315,6 @@ mod tests {
     use super::*;
     use garland_core::{Corner, Layout, MAX_ALPHA};
 
-    // Цвет первого Аддона — литерал теста, независимый от кода Аддона:
-    // случайная смена цвета ловится здесь.
-    const WARM_WHITE: Rgb8 = Rgb8 {
-        r: 255,
-        g: 180,
-        b: 120,
-    };
-
     /// Подставное хранилище: копит последний сохранённый индекс.
     struct FakeMemory(Option<usize>);
 
@@ -367,16 +389,25 @@ mod tests {
         }
     }
 
-    /// Гирлянда стартует с первого Реестра: статичный цвет горит всей Лентой.
+    /// Гирлянда стартует с первого Реестра: огонь за секунду разгорается
+    /// и рисует ровно эталонный кадр Аддона.
     #[test]
     fn starts_with_first_effect_lit() {
         let mut memory = FakeMemory(None);
         let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
         let (mut frame, mut outgoing) = frame_pair();
 
-        garland.render(&mut frame, &mut outgoing, 100);
+        garland.render(&mut frame, &mut outgoing, 1_000);
 
-        assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(0, &mapping(), 1_000).as_ref(),
+            "старт — первый Аддон Реестра на своей шкале"
+        );
+        assert!(
+            frame.pixels().iter().any(|c| *c != Rgb8::BLACK),
+            "огонь за секунду не разгорелся"
+        );
     }
 
     /// Короткое нажатие включает следующий Эффект Реестра: по завершении
@@ -405,22 +436,22 @@ mod tests {
         let mut memory = FakeMemory(None);
         let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
 
-        assert_eq!(garland.effect_name(), "Статичный цвет");
-        for expected in ["Радуга по проводу", "Кольца и волны", "Дождь и снег"]
-        {
+        assert_eq!(garland.effect_name(), "Огонь");
+        for expected in ["Снегопад", "Матрица", "Звездопад"] {
             garland.press(ButtonEvent::ShortPress, 100);
             assert_eq!(garland.effect_name(), expected);
         }
         garland.press(ButtonEvent::LongPress, 200);
         assert_eq!(
             garland.effect_name(),
-            "Дождь и снег",
+            "Звездопад",
             "Покой не меняет Текущий эффект"
         );
     }
 
     /// Короткие нажатия листают Реестр по кругу: полный обход возвращает
-    /// статичный цвет по завершении кроссфейда.
+    /// первый Аддон (отложенное переключение применяется на такте снятия
+    /// кроссфейда), который разгорается по своему эталону.
     #[test]
     fn short_press_wraps_around_registry() {
         let mut memory = FakeMemory(None);
@@ -431,8 +462,18 @@ mod tests {
             garland.press(ButtonEvent::ShortPress, 200);
         }
         garland.render(&mut frame, &mut outgoing, 200 + CROSSFADE_MS);
+        assert_eq!(
+            garland.effect_name(),
+            "Огонь",
+            "полный обход — снова первый"
+        );
 
-        assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
+        garland.render(&mut frame, &mut outgoing, 200 + CROSSFADE_MS + 1_000);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(0, &mapping(), 1_000).as_ref(),
+            "огонь после обхода совпадает с эталоном"
+        );
     }
 
     /// Длинное нажатие — Покой: Лента полностью чёрная в любой момент;
@@ -622,46 +663,43 @@ mod tests {
     }
 
     /// Переключение во время кроссфейда без рывка: новый кроссфейд стартует
-    /// от снимка текущего вывода (каналы за такт почти не меняются), затем
-    /// снимок плавно уходит в новый эффект.
+    /// от снимка текущего вывода, затем снимок плавно уходит в новый эффект.
     #[test]
     fn switch_during_fade_continues_from_current_output() {
         let mapping = mapping();
         let mut memory = FakeMemory(None);
         let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
-        garland.press(ButtonEvent::ShortPress, 200); // статичный → радуга
+        garland.press(ButtonEvent::ShortPress, 200); // огонь → снегопад
 
         let (mut frame, mut outgoing) = frame_pair();
 
-        // Кадр перед нажатием и сразу после него: за один такт (1 мс)
-        // каналы смещаются меньше чем на 2 единицы — альфа не прыгает.
-        garland.render(&mut frame, &mut outgoing, 599);
-        let before = frame.pixels().to_vec();
-
-        garland.press(ButtonEvent::ShortPress, 600); // посреди кроссфейда
-        garland.render(&mut frame, &mut outgoing, 600);
-        for (i, (was, now)) in before.iter().zip(frame.pixels()).enumerate() {
-            let jump = was
-                .r
-                .abs_diff(now.r)
-                .max(was.g.abs_diff(now.g))
-                .max(was.b.abs_diff(now.b));
-            assert!(jump <= 2, "скачок {jump} на Пикселе {i}");
+        // Нажатие посреди кроссфейда (400 из 800 мс): такт нажатия — смесь
+        // уходящего и Текущего без выбросов.
+        garland.render(&mut frame, &mut outgoing, 630);
+        garland.press(ButtonEvent::ShortPress, 640); // посреди кроссфейда
+        garland.render(&mut frame, &mut outgoing, 640);
+        let old = registry_frame(0, &mapping, 640);
+        let new = registry_frame(1, &mapping, 640 - 200);
+        for (i, pixel) in frame.pixels().iter().enumerate() {
+            assert!(
+                between(old[i], new[i], *pixel),
+                "Пиксель {i} вне кроссфейда в такт нажатия"
+            );
         }
 
         // Источник нового кроссфейда — снимок: смесь на момент нажатия
-        // (альфа прошла половину пути: 400 из 800 мс).
-        let snapshot: Vec<Rgb8> = registry_frame(0, &mapping, 600)
+        // (альфа прошла половину пути: 440 из 800 мс).
+        let snapshot: Vec<Rgb8> = registry_frame(0, &mapping, 640)
             .iter()
-            .zip(registry_frame(1, &mapping, 400).iter())
+            .zip(registry_frame(1, &mapping, 640 - 200).iter())
             .map(|(old, new)| blend(*old, *new, MAX_ALPHA / 2))
             .collect();
 
-        // Середина нового кроссфейда: пиксели между снимком и кольцами
+        // Середина нового кроссфейда: пиксели между снимком и волнами
         // (третьим Аддоном Реестра).
-        let mid = 600 + CROSSFADE_MS / 2;
+        let mid = 640 + CROSSFADE_MS / 2;
         garland.render(&mut frame, &mut outgoing, mid);
-        let target = registry_frame(2, &mapping, mid - 600);
+        let target = registry_frame(2, &mapping, mid - 640);
         for (i, pixel) in frame.pixels().iter().enumerate() {
             assert!(
                 between(snapshot[i], target[i], *pixel),
@@ -669,8 +707,8 @@ mod tests {
             );
         }
 
-        // Конец: чистые кольца на их собственной шкале.
-        garland.render(&mut frame, &mut outgoing, 600 + CROSSFADE_MS);
+        // Конец: чистые волны на их собственной шкале.
+        garland.render(&mut frame, &mut outgoing, 640 + CROSSFADE_MS);
         assert_eq!(
             frame.pixels(),
             registry_frame(2, &mapping, CROSSFADE_MS).as_ref()
@@ -723,22 +761,27 @@ mod tests {
     }
 
     /// Кроссфейд через заворот счётчика времени `u32` (49 суток работы):
-    /// смешение посреди кроссфейда и его завершение не ломаются на границе.
+    /// огонь стартует незадолго до границы, его шкала честно пересекает
+    /// заворот; смешение посреди кроссфейда и его завершение не ломаются.
     #[test]
     fn crossfade_survives_u32_wrap() {
         let mapping = mapping();
         let mut memory = FakeMemory(None);
-        let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
-        let start = u32::MAX - 400;
-        garland.press(ButtonEvent::ShortPress, start); // статичный → радуга
+        let origin = u32::MAX - 1_199; // огонь стартует за 800 мс до заворота
+        let mut garland = Garland::new(REGISTRY, mapping, origin, &mut memory);
         let (mut frame, mut outgoing) = frame_pair();
-        garland.render(&mut frame, &mut outgoing, start);
+        garland.render(&mut frame, &mut outgoing, origin);
+
+        let press = origin + 800; // 399 мс до заворота: огонь → снегопад
+        garland.press(ButtonEvent::ShortPress, press);
+        garland.render(&mut frame, &mut outgoing, press);
 
         // 100 мс после заворота: кроссфейд идёт (501 из 800) — поканальная
-        // смесь уходящего и Текущего без выбросов.
+        // смесь уходящего и Текущего без выбросов; шкалы обеихEffects —
+        // через границу u32.
         garland.render(&mut frame, &mut outgoing, 100);
-        let old = registry_frame(0, &mapping, 100);
-        let new = registry_frame(1, &mapping, 501);
+        let old = registry_frame(0, &mapping, 100u32.wrapping_sub(origin)); // 1300
+        let new = registry_frame(1, &mapping, 100u32.wrapping_sub(press)); // 501
         for (i, pixel) in frame.pixels().iter().enumerate() {
             assert!(
                 between(old[i], new[i], *pixel),
@@ -750,7 +793,7 @@ mod tests {
         garland.render(&mut frame, &mut outgoing, 401);
         assert_eq!(
             frame.pixels(),
-            registry_frame(1, &mapping, 802).as_ref(),
+            registry_frame(1, &mapping, 401u32.wrapping_sub(press)).as_ref(), // 801
             "кроссфейд завершается после заворота счётчика"
         );
     }
