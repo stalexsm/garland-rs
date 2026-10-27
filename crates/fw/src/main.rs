@@ -100,6 +100,9 @@ mod diag;
 // Мини-HTTP — чистые функции, хост-тесты идут без железа.
 #[cfg(any(test, target_arch = "riscv32"))]
 mod http;
+// Путь Кадра на Ленту — чистые функции, хост-тесты идут без железа.
+#[cfg(any(test, target_arch = "riscv32"))]
+mod strip;
 // Запись OTA-образа: буферизация чистая — хост-тесты; носитель и подтверждение
 // слота — device-часть модуля.
 #[cfg(any(test, target_arch = "riscv32"))]
@@ -253,6 +256,8 @@ use crate::button::Button;
 #[cfg(target_arch = "riscv32")]
 use crate::control::{Garland, REGISTRY};
 #[cfg(target_arch = "riscv32")]
+use crate::strip::{encode, to_strip};
+#[cfg(target_arch = "riscv32")]
 use alloc::boxed::Box;
 #[cfg(target_arch = "riscv32")]
 use garland_core::{Corner, Frame, Layout, Mapping};
@@ -276,9 +281,9 @@ async fn show(
     mapping: &Mapping,
 ) {
     let mut ordered = [garland_core::Rgb8::BLACK; PIXELS];
-    diag::to_strip(frame, mapping, &mut ordered);
+    to_strip(frame, mapping, &mut ordered);
     for (dst, src) in strip.iter_mut().zip(ordered.iter()) {
-        let color = diag::encode(*src, MAX_BRIGHTNESS);
+        let color = encode(*src, MAX_BRIGHTNESS);
         *dst = RGB8 {
             r: color.r,
             g: color.g,
