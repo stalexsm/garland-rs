@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 garland-core.workspace = true
+sha2.workspace = true
 effect-balls.workspace = true
 effect-clouds.workspace = true
 effect-confetti.workspace = true

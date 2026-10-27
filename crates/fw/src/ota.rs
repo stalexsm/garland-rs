@@ -12,6 +12,8 @@
 //! [`ImageTarget`]; настоящие носитель и подтверждение слота — device-часть
 //! этого модуля и `net.rs`.
 
+use sha2::{Digest, Sha256};
+
 // Device-часть — только в прошивке; на хосте тестируется чистая половина.
 #[cfg(target_arch = "riscv32")]
 mod device {
@@ -224,6 +226,9 @@ pub struct ImageWriter<'a, T: ImageTarget> {
     filled: usize,
     /// Записано в Слот, байт (смещение следующего сброса).
     written: u32,
+    /// Потоковая сумма всех дописанных байт образа — сверяется с ожиданием
+    /// клиента до активации Слота.
+    hasher: Sha256,
 }
 
 impl<'a, T: ImageTarget> ImageWriter<'a, T> {
@@ -234,6 +239,7 @@ impl<'a, T: ImageTarget> ImageWriter<'a, T> {
             sector,
             filled: 0,
             written: 0,
+            hasher: Sha256::new(),
         }
     }
 
@@ -252,6 +258,7 @@ impl<'a, T: ImageTarget> ImageWriter<'a, T> {
         while !rest.is_empty() {
             let take = core::cmp::min(SECTOR_SIZE - self.filled, rest.len());
             self.sector[self.filled..self.filled + take].copy_from_slice(&rest[..take]);
+            self.hasher.update(&rest[..take]);
             self.filled += take;
             rest = &rest[take..];
             if self.filled == SECTOR_SIZE {
@@ -259,6 +266,14 @@ impl<'a, T: ImageTarget> ImageWriter<'a, T> {
             }
         }
         Ok(())
+    }
+
+    /// Сумма SHA256 дописанных байт; сверяется с `X-OTA-SHA256` клиента до
+    /// активации Слота. Паддинг [`Self::finish`] не считается.
+    pub fn image_digest(&self) -> [u8; 32] {
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(self.hasher.clone().finalize().as_slice());
+        digest
     }
 
     /// Завершить образ: добить 0xFF до кратности 16 байт (паддинг нужен
@@ -344,6 +359,53 @@ mod tests {
             state.offsets.push(offset);
             Ok(())
         }
+    }
+
+    /// Вектор SHA-256 строки «abc» из FIPS 180-2.
+    const ABC_SHA256: [u8; 32] = [
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22,
+        0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00,
+        0x15, 0xad,
+    ];
+
+    /// Сумма дописанных байт совпадает с вектором: по ней заливка сверяется
+    /// до активации Слота.
+    #[test]
+    fn digest_matches_known_sha256_vector() {
+        let target = FakeTarget::new(2 * SECTOR_SIZE);
+        let mut sector = [0u8; SECTOR_SIZE];
+        let mut writer = ImageWriter::new(target, &mut sector);
+        writer.extend(b"abc").unwrap();
+        assert_eq!(writer.image_digest(), ABC_SHA256);
+    }
+
+    /// Те же байты, пришедшие разными чанками через секторную границу,
+    /// дают ту же сумму: чанки сшиваются в один поток.
+    #[test]
+    fn digest_is_chunking_invariant() {
+        let one_shot = {
+            let target = FakeTarget::new(3 * SECTOR_SIZE);
+            let mut sector = [0u8; SECTOR_SIZE];
+            let mut writer = ImageWriter::new(target, &mut sector);
+            let image: Vec<u8> = (0..5000).map(|i| i as u8).collect();
+            writer.extend(&image).unwrap();
+            writer.extend(b"abc").unwrap();
+            writer.image_digest()
+        };
+        let chunked = {
+            let target = FakeTarget::new(3 * SECTOR_SIZE);
+            let mut sector = [0u8; SECTOR_SIZE];
+            let mut writer = ImageWriter::new(target, &mut sector);
+            let image: Vec<u8> = (0..5000).map(|i| i as u8).collect();
+            for chunk in image.chunks(17) {
+                writer.extend(chunk).unwrap();
+            }
+            for byte in b"abc" {
+                writer.extend(core::slice::from_ref(byte)).unwrap();
+            }
+            writer.image_digest()
+        };
+        assert_eq!(chunked, one_shot, "чанки не ломают поток байт");
     }
 
     #[test]

@@ -18,8 +18,7 @@
 #![no_std]
 
 use garland_core::{
-    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, advance_anchor, hsv2rgb_rainbow,
-    sin8, steps_since,
+    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, hsv2rgb_rainbow, sin8, take_steps,
 };
 
 /// Период такта, мс: пошаговые эффекты живут с темпом ~12 тактов/с.
@@ -52,9 +51,11 @@ const PHASE_LIMIT: u16 = 360;
 
 /// Случайная фаза 0..359: формула [`Rng16::random8_below`] с широким
 /// пределом — `random8_below(360)` задания не помещается в байтовый
-/// предел метода ядра, формула та же: `(random8 · 360) >> 8`.
+/// предел метода ядра, формула та же: `(random8 · 360) >> 8`. Промежуточное
+/// умножение — в u32: 255·360 больше u16 (переполнение-паника в
+/// dev-сборке).
 fn phase_roll(rng: &mut Rng16) -> u16 {
-    (u16::from(rng.random8()) * PHASE_LIMIT) >> 8
+    ((u32::from(rng.random8()) * u32::from(PHASE_LIMIT)) >> 8) as u16
 }
 
 /// Полный круг синуса ядра FastLED: [`sin8`] меряет угол в 1/256 круга.
@@ -191,12 +192,8 @@ impl Effect for Waves {
         if frame.is_empty() {
             return;
         }
-        let steps = steps_since(self.last_ms, elapsed_ms, TICK_MS);
-        self.last_ms = advance_anchor(self.last_ms, elapsed_ms, TICK_MS);
-        if steps > 0 {
-            for _ in 0..steps {
-                self.step();
-            }
+        for _ in 0..take_steps(&mut self.last_ms, elapsed_ms, TICK_MS) {
+            self.step();
         }
         self.draw(frame);
     }
@@ -206,6 +203,16 @@ impl Effect for Waves {
 mod tests {
     use super::*;
     use garland_core::{Corner, Layout};
+
+    /// Бросок фазы не переполняется: до фикса dev-сборка паниковала на
+    /// броске ≥ 183 (255·360 больше u16).
+    #[test]
+    fn phase_roll_stays_within_degrees() {
+        let mut rng = Rng16::new();
+        for _ in 0..1000 {
+            assert!(phase_roll(&mut rng) < PHASE_LIMIT);
+        }
+    }
 
     /// Ширина тестовой Матрицы, Пикселей.
     const W: usize = 8;

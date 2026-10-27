@@ -1,26 +1,13 @@
-//! Диагностические кадры Прошивки: тестовая сетка Раскладки на старте,
-//! статичный цвет и циклы blink/breathe для гейта драйвера.
+//! Кадры Прошивки: улыбающийся смайл на старте, статичный цвет и циклы
+//! blink/breathe для гейта драйвера.
 //!
 //! Чистые функции без железа: геометрия — через [`Frame`] и [`Mapping`],
 //! время приходит снаружи, поэтому всё проверяется тестами на хосте.
 
-use garland_core::{Frame, Mapping, Rgb8, gamma};
+use crate::strip;
+use garland_core::{Frame, Mapping, Rgb8};
 
-/// Цвет Пикселя 0: горит всю фазу сетки и отмечает стартовый угол.
-const GRID_ORIGIN: Rgb8 = Rgb8 { r: 255, g: 0, b: 0 };
-
-/// Белый цвет бегунка: видны все три канала Ленты.
-const GRID_RUNNER: Rgb8 = Rgb8 {
-    r: 255,
-    g: 255,
-    b: 255,
-};
-
-/// Сколько миллисекунд бегунок горит на одной позиции Ленты: полный проход
-/// Стенда 8×8 занимает около 4 с.
-const GRID_STEP_MS: u32 = 60;
-
-/// Статичный цвет Прошивки: тёплый белый — цвет тестовой сетки Раскладки.
+/// Статичный цвет Прошивки: тёплый белый.
 pub const STATIC_COLOR: Rgb8 = Rgb8 {
     r: 255,
     g: 180,
@@ -32,6 +19,103 @@ pub const BLINK_HALF_MS: u32 = 200;
 
 /// Период дыхания (спад + подъём), мс.
 pub const BREATHE_PERIOD_MS: u32 = 2000;
+
+/// Цвет лица смайла: жёлтый.
+const SMILE_FACE: Rgb8 = Rgb8 {
+    r: 255,
+    g: 255,
+    b: 0,
+};
+
+/// Сторона спрайта смайла, Пикселей.
+const SMILE_SIDE: u16 = 8;
+
+/// Спрайт смайла [`SMILE_SIDE`]×[`SMILE_SIDE`], строки сверху вниз: `true` —
+/// жёлтый Пиксель лица, `false` — тёмный (контур, глаза, улыбка).
+const SMILE_SPRITE: [[bool; SMILE_SIDE as usize]; SMILE_SIDE as usize] = [
+    [false, false, true, true, true, true, false, false],
+    [false, true, true, true, true, true, true, false],
+    [true, true, false, true, true, false, true, true],
+    [true, true, true, true, true, true, true, true],
+    [true, false, true, true, true, true, false, true],
+    [true, true, false, false, false, false, true, true],
+    [false, true, true, true, true, true, true, false],
+    [false, false, true, true, true, true, false, false],
+];
+
+/// Во сколько раз смайл крупнее спрайта на этой Матрице: целочисленный
+/// масштаб по меньшей стороне, минимум единица — спрайт никогда не сжимается.
+fn scale_of(mapping: &Mapping) -> u16 {
+    (mapping.width().min(mapping.height()) / SMILE_SIDE).max(1)
+}
+
+/// Рисует спрайт смайла левым верхним углом в (x0, y0), каждый Пиксель —
+/// блок `scale`×`scale`; Пиксели за пределами Фреймбуфера срезаются.
+fn blit_smile(frame: &mut Frame, x0: u16, y0: u16, scale: u16) {
+    for (row, line) in SMILE_SPRITE.iter().enumerate() {
+        for (col, lit) in line.iter().enumerate() {
+            if !*lit {
+                continue;
+            }
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    frame.set(
+                        x0 + col as u16 * scale + dx,
+                        y0 + row as u16 * scale + dy,
+                        SMILE_FACE,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Координаты глаз в спрайте (столбец, строка): тёмные Пиксели лица,
+/// которые при моргании вспыхивают белым.
+const SMILE_EYES: [(u16, u16); 2] = [(2, 2), (5, 2)];
+
+/// Цвет глаз при моргании: белый.
+const SMILE_BLINK_COLOR: Rgb8 = Rgb8 {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+
+/// Перерыв между морганиями, мс: смайл моргает раз в три секунды.
+const SMILE_BLINK_PERIOD_MS: u32 = 3000;
+
+/// Сколько миллисекунд глаза остаются закрытыми.
+const SMILE_BLINK_MS: u32 = 200;
+
+/// Кадр приветствия на старте в момент `elapsed_ms`: жёлтый улыбающийся
+/// смайл по центру Матрицы, глаза и улыбка — тёмные Пиксели лица. На
+/// Матрице крупнее спрайта смайл растёт целым числом раз по меньшей
+/// стороне. Раз в
+/// [`SMILE_BLINK_PERIOD_MS`] глаза на [`SMILE_BLINK_MS`] вспыхивают белым.
+/// Прошивка держит смайл `SMILE_SECS` секунд, затем включает Гирлянду.
+pub fn smile(frame: &mut Frame, mapping: &Mapping, elapsed_ms: u32) {
+    frame.fill(Rgb8::BLACK);
+    let scale = scale_of(mapping);
+    let side = SMILE_SIDE * scale;
+    let x0 = mapping.width().saturating_sub(side) / 2;
+    let y0 = mapping.height().saturating_sub(side) / 2;
+    blit_smile(frame, x0, y0, scale);
+    let eyes_closed = elapsed_ms % SMILE_BLINK_PERIOD_MS < SMILE_BLINK_MS;
+    if eyes_closed {
+        // Глаза — дырки в спрайте: при моргании вспыхивают белым.
+        for (ex, ey) in SMILE_EYES {
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    frame.set(
+                        x0 + ex * scale + dx,
+                        y0 + ey * scale + dy,
+                        SMILE_BLINK_COLOR,
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// Цвет blink в момент `elapsed_ms`: полный цвет в первой половине периода,
 /// чёрный во второй, затем цикл повторяется.
@@ -53,53 +137,8 @@ pub fn breathe(elapsed_ms: u32) -> Rgb8 {
     } else {
         BREATHE_PERIOD_MS - phase
     };
-    let level = (distance * u32::from(MAX_CHANNEL) / half) as u8;
-    scale(STATIC_COLOR, level)
-}
-
-/// Максимальное значение цветового канала (из канона гаммы garland-core).
-const MAX_CHANNEL: u8 = 255;
-
-/// Приведение цвета к Ленте: гамма-коррекция, затем сжатие до
-/// `max_brightness` — ни один канал результата не превысит потолок.
-pub fn encode(c: Rgb8, max_brightness: u8) -> Rgb8 {
-    scale(gamma(c), max_brightness)
-}
-
-/// Перекладывает Кадр в буфер Ленты в физическом порядке: Пиксель (x, y)
-/// встаёт в слот [`Mapping::strip_index`]. Длина `strip` обязана совпадать
-/// с числом Пикселей `mapping`, размеры `frame` — с Матрицей `mapping`.
-pub fn to_strip(frame: &Frame, mapping: &Mapping, strip: &mut [Rgb8]) {
-    debug_assert_eq!(strip.len(), mapping.pixel_count());
-    debug_assert_eq!(frame.len(), mapping.pixel_count());
-    for (slot, pixel) in strip.iter_mut().enumerate() {
-        let (x, y) = mapping.coord(slot);
-        *pixel = frame.get(x, y).expect("размер Фреймбуфера = Матрице");
-    }
-}
-
-/// Пропорциональное сжатие каналов цвета до уровня 0..=255.
-fn scale(c: Rgb8, level: u8) -> Rgb8 {
-    let channel = |v: u8| (u16::from(v) * u16::from(level) / u16::from(MAX_CHANNEL)) as u8;
-    Rgb8 {
-        r: channel(c.r),
-        g: channel(c.g),
-        b: channel(c.b),
-    }
-}
-
-/// Кадр тестовой сетки Раскладки в момент `elapsed_ms` от старта фазы:
-/// белый бегунок идёт по Ленте и показывает порядок змейки, красный Пиксель 0
-/// весь цикл держит стартовый угол.
-pub fn test_grid(frame: &mut Frame, mapping: &Mapping, elapsed_ms: u32) {
-    frame.fill(Rgb8::BLACK);
-    let (x, y) = mapping.coord(0);
-    frame.set(x, y, GRID_ORIGIN);
-
-    let count = mapping.pixel_count() as u32;
-    let position = elapsed_ms / GRID_STEP_MS % count;
-    let (x, y) = mapping.coord(position as usize);
-    frame.set(x, y, GRID_RUNNER);
+    let level = (distance * u32::from(strip::MAX_CHANNEL) / half) as u8;
+    strip::scale(STATIC_COLOR, level)
 }
 
 #[cfg(test)]
@@ -107,89 +146,157 @@ mod tests {
     use super::*;
     use garland_core::{Corner, Layout};
 
-    /// Матрица 4×3, змейка по рядам, старт слева сверху.
-    fn mapping() -> Mapping {
-        Mapping::new(4, 3, Layout::RowSerpentine, Corner::TopLeft)
+    /// Смайл на Стенде 8×8 занимает Матрицу целиком: жёлтое лицо, глаза и
+    /// улыбка — тёмные Пиксели (спрайт от руки — независимая проверка).
+    #[test]
+    fn smile_fills_the_stand() {
+        let mapping = Mapping::new(8, 8, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 64];
+        let mut frame = Frame::new(8, 8, &mut buffer).unwrap();
+
+        // Момент с открытыми глазами — окно совпадает со спрайтом целиком.
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
+
+        let expected = [
+            "..YYYY..", ".YYYYYY.", "YY.YY.YY", "YYYYYYYY", "Y.YYYY.Y", "YY....YY", ".YYYYYY.",
+            "..YYYY..",
+        ];
+        let face = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        for y in 0..8u16 {
+            for x in 0..8u16 {
+                let want = if expected[y as usize].as_bytes()[x as usize] == b'Y' {
+                    face
+                } else {
+                    Rgb8::BLACK
+                };
+                assert_eq!(frame.get(x, y), Some(want), "Пиксель ({x}, {y})");
+            }
+        }
     }
 
+    /// На Матрице крупнее Стенда смайл встаёт по центру: поле в один Пиксель
+    /// со всех сторон.
     #[test]
-    fn grid_marks_origin_pixel_red() {
-        let mapping = mapping();
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+    fn smile_centers_on_a_bigger_matrix() {
+        let mapping = Mapping::new(10, 10, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 100];
+        let mut frame = Frame::new(10, 10, &mut buffer).unwrap();
 
-        // Пиксель 0 при этой Раскладке — (0, 0); бегунок уже ушёл на позицию 1,
-        // и красная отметка стартового угла видна.
-        test_grid(&mut frame, &mapping, GRID_STEP_MS);
+        // Момент с открытыми глазами.
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
 
-        assert_eq!(frame.get(0, 0), Some(Rgb8 { r: 255, g: 0, b: 0 }));
+        let face = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        // Угол Матрицы тёмный, верх лба спрайта (строка 0, столбцы 2..5) —
+        // со сдвигом на поле.
+        assert_eq!(frame.get(0, 0), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(3, 1), Some(face));
+        assert_eq!(frame.get(2, 1), Some(Rgb8::BLACK));
+        // Широкая улыбка (строка 5 спрайта, столбцы 2..5) — тёмная.
+        assert_eq!(frame.get(4, 6), Some(Rgb8::BLACK));
+        // Правый нижний угол тоже остаётся полем.
+        assert_eq!(frame.get(9, 9), Some(Rgb8::BLACK));
     }
 
-    /// Белый бегунок движется по Ленте: на первой позиции он ещё на Пикселе 0
-    /// (перекрывает красный), через шаг — на соседнем Пикселе 1.
+    /// Смайл моргает: в начале цикла глаза горят белым, улыбка на месте;
+    /// потом глаза открываются (тёмные Пиксели); с новым циклом вспыхивают
+    /// снова.
     #[test]
-    fn grid_runner_walks_the_strip() {
-        let mapping = mapping();
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+    fn smile_blinks_eyes() {
+        let mapping = Mapping::new(8, 8, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 64];
+        let mut frame = Frame::new(8, 8, &mut buffer).unwrap();
 
-        test_grid(&mut frame, &mapping, 0);
-        assert_eq!(
-            frame.get(0, 0),
-            Some(Rgb8 {
-                r: 255,
-                g: 255,
-                b: 255
-            })
-        );
+        // Моргание: глаза горят белым, улыбка не тронута.
+        let white = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        smile(&mut frame, &mapping, 0);
+        assert_eq!(frame.get(2, 2), Some(white));
+        assert_eq!(frame.get(5, 2), Some(white));
+        assert_eq!(frame.get(3, 5), Some(Rgb8::BLACK));
 
-        test_grid(&mut frame, &mapping, GRID_STEP_MS);
-        assert_eq!(
-            frame.get(1, 0),
-            Some(Rgb8 {
-                r: 255,
-                g: 255,
-                b: 255
-            })
-        );
-        assert_eq!(frame.get(0, 0), Some(GRID_ORIGIN));
+        // Открытые глаза: те же Пиксели тёмные.
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
+        assert_eq!(frame.get(2, 2), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(5, 2), Some(Rgb8::BLACK));
+
+        // Новый цикл — глаза снова вспыхивают белым.
+        smile(&mut frame, &mapping, SMILE_BLINK_PERIOD_MS);
+        assert_eq!(frame.get(2, 2), Some(white));
     }
 
-    /// На развёрнутом ряду змейки бегунок идёт навстречу: Пиксель 5 матрицы
-    /// 4×3 стоит в (2, 1) — второй ряд проходится справа налево.
+    /// На крупной Матрице смайл растёт целым числом раз: спрайт 8×8 с
+    /// масштабом 2 занимает 16×16, каждый Пиксель лица — блок 2×2.
     #[test]
-    fn grid_runner_follows_serpentine_reversal() {
-        let mapping = mapping();
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+    fn smile_scales_up_on_a_bigger_matrix() {
+        let mapping = Mapping::new(16, 16, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 256];
+        let mut frame = Frame::new(16, 16, &mut buffer).unwrap();
 
-        test_grid(&mut frame, &mapping, 5 * GRID_STEP_MS);
-        assert_eq!(
-            frame.get(2, 1),
-            Some(Rgb8 {
-                r: 255,
-                g: 255,
-                b: 255
-            })
-        );
+        // Открытые глаза: блоки глаз тёмные, лицо вокруг жёлтое.
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
+
+        let face = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        let white = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        // Угол Матрицы тёмный: спрайт при масштабе 2 занимает всё окно,
+        // но его тёмные углы остаются тёмными.
+        assert_eq!(frame.get(0, 0), Some(Rgb8::BLACK));
+        // Пиксель лба (2, 0) — блок 2×2 в (4..5, 0..1).
+        assert_eq!(frame.get(4, 0), Some(face));
+        assert_eq!(frame.get(5, 1), Some(face));
+        assert_eq!(frame.get(3, 0), Some(Rgb8::BLACK));
+        // Открытый глаз (2, 2) — тёмный блок 2×2 в (4..5, 4..5).
+        assert_eq!(frame.get(4, 4), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(5, 5), Some(Rgb8::BLACK));
+        // Щека под глазом (2, 3) — жёлтый блок.
+        assert_eq!(frame.get(4, 6), Some(face));
+
+        // Моргание: блоки глаз вспыхивают белым.
+        smile(&mut frame, &mapping, 0);
+        assert_eq!(frame.get(4, 4), Some(white));
+        assert_eq!(frame.get(5, 5), Some(white));
     }
 
-    /// Пройдя Ленту до конца, бегунок начинается с Пикселя 0 заново.
+    /// На прямоугольной Матрице смайл квадратный (масштаб по меньшей
+    /// стороне) и центрируется по обеим осям независимо.
     #[test]
-    fn grid_runner_wraps_around_the_strip() {
-        let mapping = mapping();
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
+    fn smile_centers_on_a_rectangular_matrix() {
+        // Меньшая сторона 12: масштаб 1, поля 6 по X и 2 по Y.
+        let mapping = Mapping::new(20, 12, Layout::RowSerpentine, Corner::TopLeft);
+        let mut buffer = [Rgb8::BLACK; 240];
+        let mut frame = Frame::new(20, 12, &mut buffer).unwrap();
 
-        test_grid(&mut frame, &mapping, 12 * GRID_STEP_MS);
-        assert_eq!(
-            frame.get(0, 0),
-            Some(Rgb8 {
-                r: 255,
-                g: 255,
-                b: 255
-            })
-        );
+        smile(&mut frame, &mapping, SMILE_BLINK_MS);
+
+        let face = Rgb8 {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        // Верх лба спрайта (2, 0) — в (8, 2).
+        assert_eq!(frame.get(8, 2), Some(face));
+        assert_eq!(frame.get(7, 2), Some(Rgb8::BLACK));
+        // Правое поле и строка под подбородком пустые.
+        assert_eq!(frame.get(14, 2), Some(Rgb8::BLACK));
+        assert_eq!(frame.get(9, 10), Some(Rgb8::BLACK));
     }
 
     /// Blink: первая половина периода — полный цвет, вторая — чёрный,
@@ -219,55 +326,5 @@ mod tests {
         assert_eq!(breathe(250), breathe(BREATHE_PERIOD_MS - 250));
         assert!(brightness_of(breathe(250)) < brightness_of(breathe(500)));
         assert!(brightness_of(breathe(500)) < brightness_of(breathe(750)));
-    }
-
-    /// Приведение к Ленте: гамма, затем сжатие до потолка яркости.
-    #[test]
-    fn encode_applies_gamma_then_caps_brightness() {
-        // Полный потолок — чистая гамма.
-        assert_eq!(encode(STATIC_COLOR, MAX_CHANNEL), gamma(STATIC_COLOR));
-        // Ни один канал не превышает потолок.
-        for max in [1, 8, 64, 200] {
-            let c = encode(STATIC_COLOR, max);
-            assert!(c.r <= max && c.g <= max && c.b <= max);
-        }
-        // Чёрный остаётся чёрным.
-        assert_eq!(encode(Rgb8::BLACK, 64), Rgb8::BLACK);
-    }
-
-    /// Порядок Ленты физический: на змейке логический ряд 1 лежит на Ленте
-    /// навстречу, Пиксель (0, 1) стоит под номером 7 (матрица 4×3).
-    #[test]
-    fn to_strip_applies_serpentine_order() {
-        let mapping = Mapping::new(4, 3, Layout::RowSerpentine, Corner::TopLeft);
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
-        frame.set(0, 1, GRID_RUNNER);
-
-        let mut strip = [Rgb8::BLACK; 12];
-        to_strip(&frame, &mapping, &mut strip);
-
-        for (slot, pixel) in strip.iter().enumerate() {
-            let expected = if slot == 7 { GRID_RUNNER } else { Rgb8::BLACK };
-            assert_eq!(*pixel, expected, "слот Ленты {slot}");
-        }
-    }
-
-    /// Стартовый угол тоже применяется: при старте справа снизу логический
-    /// (0, 0) лежит в конце Ленты.
-    #[test]
-    fn to_strip_applies_start_corner() {
-        let mapping = Mapping::new(4, 3, Layout::RowPlain, Corner::BottomRight);
-        let mut buffer = [Rgb8::BLACK; 12];
-        let mut frame = Frame::new(4, 3, &mut buffer).unwrap();
-        frame.set(0, 0, GRID_RUNNER);
-
-        let mut strip = [Rgb8::BLACK; 12];
-        to_strip(&frame, &mapping, &mut strip);
-
-        for (slot, pixel) in strip.iter().enumerate() {
-            let expected = if slot == 11 { GRID_RUNNER } else { Rgb8::BLACK };
-            assert_eq!(*pixel, expected, "слот Ленты {slot}");
-        }
     }
 }

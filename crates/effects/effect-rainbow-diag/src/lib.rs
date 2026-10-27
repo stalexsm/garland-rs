@@ -17,7 +17,7 @@
 
 #![no_std]
 
-use garland_core::{Effect, Frame, Hsv8, Mapping, advance_anchor, hsv2rgb_rainbow, steps_since};
+use garland_core::{Effect, Frame, Hsv8, Mapping, hsv2rgb_rainbow, take_steps};
 
 /// Период такта исходных эффектов, мс: один шаг анимации раз в 80 мс.
 const TICK_MS: u32 = 80;
@@ -77,12 +77,8 @@ impl RainbowDiag {
 impl Effect for RainbowDiag {
     fn render(&mut self, frame: &mut Frame<'_>, elapsed_ms: u32) {
         // Такты исходного алгоритма: досчитать все пропущенные шаги, затем рисовать.
-        let steps = steps_since(self.last_ms, elapsed_ms, TICK_MS);
-        self.last_ms = advance_anchor(self.last_ms, elapsed_ms, TICK_MS);
-        if steps > 0 {
-            for _ in 0..steps {
-                self.step();
-            }
+        for _ in 0..take_steps(&mut self.last_ms, elapsed_ms, TICK_MS) {
+            self.step();
         }
         let step = self.gradient_step();
         let (w, h) = (usize::from(frame.width()), usize::from(frame.height()));

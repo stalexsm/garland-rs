@@ -9,9 +9,7 @@
 
 #![no_std]
 
-use garland_core::{
-    CLOUD_PALETTE, Effect, Frame, Mapping, NoiseField, advance_anchor, steps_since,
-};
+use garland_core::{CLOUD_PALETTE, Effect, Frame, Mapping, NoiseField, take_steps};
 
 /// Интервал такта, мс: шумовые эффекты исходного алгоритма — пошаговые.
 const TICK_MS: u32 = 80;
@@ -57,12 +55,8 @@ impl Effect for Clouds {
     fn render(&mut self, frame: &mut Frame<'_>, elapsed_ms: u32) {
         // Пошаговая физика исходного алгоритма: догнать пропущенные такты разом
         // (задолженность ограничена потолком в [`steps_since`]).
-        let steps = steps_since(self.last_ms, elapsed_ms, TICK_MS);
-        self.last_ms = advance_anchor(self.last_ms, elapsed_ms, TICK_MS);
-        if steps > 0 {
-            for _ in 0..steps {
-                self.noise.tick(SCALE, SPEED);
-            }
+        for _ in 0..take_steps(&mut self.last_ms, elapsed_ms, TICK_MS) {
+            self.noise.tick(SCALE, SPEED);
         }
         // Контракт Эффекта выполняет движок: окраска пишет каждый Пиксель.
         self.noise.render(&CLOUD_PALETTE, COLOR_LOOP, frame);

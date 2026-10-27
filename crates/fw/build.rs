@@ -27,13 +27,17 @@ const DEFAULT_START_CORNER: &str = "top-left";
 const DEFAULT_LED_PIN: &str = "10";
 const DEFAULT_BUTTON_PIN: &str = "9";
 const DEFAULT_MAX_BRIGHTNESS: &str = "64";
-const DEFAULT_TEST_GRID_SECS: &str = "8";
+const DEFAULT_SMILE_SECS: &str = "8";
 const DEFAULT_DRIVER_GATE: &str = "0";
 
 // Учётные данные Wi-Fi — только при сборке; пустые значения (дефолт)
 // означают офлайн-режим: прошивка собирается и работает без сети.
 const DEFAULT_WIFI_SSID: &str = "";
 const DEFAULT_WIFI_PASS: &str = "";
+
+// Пароль OTA-заливки — только при сборке; пустое значение (дефолт)
+// отключает заливку: POST /ota отвечает 403, страница не показывает форму.
+const DEFAULT_OTA_PASS: &str = "";
 
 fn build_config() {
     for (name, default) in [
@@ -44,10 +48,11 @@ fn build_config() {
         ("LED_PIN", DEFAULT_LED_PIN),
         ("BUTTON_PIN", DEFAULT_BUTTON_PIN),
         ("MAX_BRIGHTNESS", DEFAULT_MAX_BRIGHTNESS),
-        ("TEST_GRID_SECS", DEFAULT_TEST_GRID_SECS),
+        ("SMILE_SECS", DEFAULT_SMILE_SECS),
         ("DRIVER_GATE", DEFAULT_DRIVER_GATE),
         ("WIFI_SSID", DEFAULT_WIFI_SSID),
         ("WIFI_PASS", DEFAULT_WIFI_PASS),
+        ("OTA_PASS", DEFAULT_OTA_PASS),
     ] {
         let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
         println!("cargo:rustc-env={name}={value}");
