@@ -157,4 +157,26 @@ mod tests {
 
         pulse.render(&mut frame, 0);
     }
+
+    /// Шкала времени не переполняет u32: кадр на границе шкалы считается
+    /// без паники и совпадает с кадром той же фазы периода — дыхание
+    /// периодично и на границе шкалы.
+    #[test]
+    fn elapsed_at_u32_max_does_not_overflow() {
+        let mut border = Pulse;
+        let mut border_buffer = [Rgb8::BLACK; 12];
+        border.render(&mut Frame::new(4, 3, &mut border_buffer).unwrap(), u32::MAX);
+
+        let mut same_phase = Pulse;
+        let mut same_phase_buffer = [Rgb8::BLACK; 12];
+        same_phase.render(
+            &mut Frame::new(4, 3, &mut same_phase_buffer).unwrap(),
+            u32::MAX % PERIOD_MS,
+        );
+
+        assert_eq!(
+            border_buffer, same_phase_buffer,
+            "дыхание периодично на границе шкалы"
+        );
+    }
 }

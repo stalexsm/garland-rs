@@ -222,4 +222,22 @@ mod tests {
 
         sparkle.render(&mut frame, 0);
     }
+
+    /// Шкала времени не переполняет u32: кадр на границе шкалы (почти
+    /// 49,7 суток) считается без паники, мусор в буфере не переживает.
+    #[test]
+    fn elapsed_at_u32_max_does_not_overflow() {
+        let mut sparkle = Sparkle;
+        let mut buffer = [Rgb8 { r: 9, g: 9, b: 9 }; 64];
+        let mut frame = Frame::new(8, 8, &mut buffer).unwrap();
+
+        sparkle.render(&mut frame, u32::MAX);
+
+        assert!(
+            frame
+                .pixels()
+                .iter()
+                .all(|c| !(c.r == 9 && c.g == 9 && c.b == 9))
+        );
+    }
 }

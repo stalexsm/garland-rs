@@ -268,4 +268,35 @@ mod tests {
 
         precipitation.render(&mut frame, 0);
     }
+
+    /// Вырожденная Матрица 1×1 — единственный Пиксель: рендер без паники,
+    /// мусор в буфере не переживает.
+    #[test]
+    fn single_pixel_matrix_still_rains() {
+        let mut precipitation = Precipitation;
+        let mut buffer = [Rgb8 { r: 255, g: 0, b: 0 }];
+        let mut frame = Frame::new(1, 1, &mut buffer).unwrap();
+
+        precipitation.render(&mut frame, 100);
+
+        assert_ne!(frame.pixels()[0], Rgb8 { r: 255, g: 0, b: 0 });
+    }
+
+    /// Шкала времени не переполняет u32: кадр на границе шкалы считается
+    /// без паники, мусор в буфере не переживает.
+    #[test]
+    fn elapsed_at_u32_max_does_not_overflow() {
+        let mut precipitation = Precipitation;
+        let mut buffer = [Rgb8 { r: 255, g: 0, b: 0 }; 64];
+        let mut frame = Frame::new(8, 8, &mut buffer).unwrap();
+
+        precipitation.render(&mut frame, u32::MAX);
+
+        assert!(
+            frame
+                .pixels()
+                .iter()
+                .all(|c| c.r != 255 || c.g != 0 || c.b != 0)
+        );
+    }
 }
