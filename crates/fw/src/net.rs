@@ -208,6 +208,10 @@ async fn serve(
                 info!("HTTP: нет маршрута {method} {path}");
                 send(socket, http::RESPONSE_NOT_FOUND.as_bytes()).await;
             }
+            Some(http::Request::CrossOrigin) => {
+                warn!("HTTP: POST /ota с чужого Origin — отклонено");
+                send(socket, http::RESPONSE_FORBIDDEN.as_bytes()).await;
+            }
             Some(http::Request::Malformed) => {
                 warn!("HTTP: запрос не разбирается");
                 send(socket, http::RESPONSE_BAD_REQUEST.as_bytes()).await;
@@ -258,7 +262,40 @@ async fn receive_image(
             // Каждый отказ — до активации: прежняя Прошивка продолжает работать.
             if let Some((status, text)) = rejection.answer() {
                 reply(socket, response, status, text).await;
+                // Сокет, закрытый с непрочитанным телом, уходит клиенту RST —
+                // тот может не увидеть уже отправленный ответ. Остаток тела
+                // дочитываем-выбрасываем (для Empty тела нет, Aborted — клиента
+                // уже нет, NotAnImage — тело дочитано полностью; Flash посреди
+                // тела не дренируется — потреблённая доля неизвестна, и неточный
+                // остаток заставил бы читать до таймаута, до 10 с простоя
+                // однопоточного сервера).
+                if let Rejection::TooLarge { size, .. } = rejection {
+                    drain_body(socket, size, head, ota.chunk.as_mut_slice()).await;
+                }
             }
+        }
+    }
+}
+
+/// Дочитать и выбросить остаток тела отклонённой заливки: без этого закрытие
+/// уходит клиенту RST, и браузер может показать «обрыв соединения» вместо
+/// ответа об ошибке. Клиент, медленнее таймаута сокета, всё же получает RST —
+/// для него корректное закрытие и не обещано.
+async fn drain_body(
+    socket: &mut TcpSocket<'_>,
+    content_length: usize,
+    head: &[u8],
+    sink: &mut [u8],
+) {
+    // Часть тела пришла вместе с заголовком — её дочитывать не нужно.
+    let mut remaining =
+        content_length.saturating_sub((head.len() - http::body_start(head)).min(content_length));
+    while remaining > 0 {
+        let want = sink.len().min(remaining);
+        match socket.read(&mut sink[..want]).await {
+            Ok(0) => return,
+            Ok(n) => remaining -= n,
+            Err(_) => return,
         }
     }
 }
@@ -280,11 +317,14 @@ async fn stream_image(
     flash: &mut FlashStorage<'static>,
     ota: &mut ota::OtaBuffers,
 ) -> Result<u32, Rejection> {
-    let mut session = ota::Session::begin(flash, &mut *ota.table).map_err(Rejection::Flash)?;
-    let mut writer = session.open_writer(ota.sector).map_err(Rejection::Flash)?;
+    // Заведомо невалидный запрос отклоняется до чтения таблицы разделов:
+    // Session::begin дёргает флеш и выбирает Слот — незачем делать это ради
+    // ответа «пустое тело».
     if content_length == 0 {
         return Err(Rejection::Empty);
     }
+    let mut session = ota::Session::begin(flash, &mut *ota.table).map_err(Rejection::Flash)?;
+    let mut writer = session.open_writer(ota.sector).map_err(Rejection::Flash)?;
     if content_length > writer.capacity() {
         return Err(Rejection::TooLarge {
             size: content_length,
