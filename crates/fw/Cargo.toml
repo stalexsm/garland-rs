@@ -8,7 +8,9 @@ publish = false
 
 [dependencies]
 garland-core.workspace = true
+effect-precipitation.workspace = true
 effect-rainbow.workspace = true
+effect-rings.workspace = true
 effect-solid.workspace = true
 heapless.workspace = true
 log.workspace = true

@@ -12,7 +12,9 @@ extern crate alloc;
 
 use crate::button::ButtonEvent;
 use alloc::boxed::Box;
+use effect_precipitation::Precipitation;
 use effect_rainbow::Rainbow;
+use effect_rings::Rings;
 use effect_solid::Solid;
 use garland_core::{Effect, Frame, Mapping, Rgb8, blend};
 
@@ -48,6 +50,8 @@ pub static REGISTRY: &[RegistryEntry] = &[
     ("Радуга по проводу", |mapping| {
         Box::new(Rainbow::new(mapping))
     }),
+    ("Кольца и волны", |_mapping| Box::new(Rings)),
+    ("Дождь и снег", |_mapping| Box::new(Precipitation)),
 ];
 
 /// Уходящий Эффект: живёт, пока идёт его кроссфейд с Текущим.
@@ -313,6 +317,38 @@ mod tests {
         inside(a.r, b.r, c.r) && inside(a.g, b.g, c.g) && inside(a.b, b.b, c.b)
     }
 
+    #[test]
+    fn every_addon_is_reachable_by_button_and_fades_in() {
+        let mapping = mapping();
+        for (offset, (name, _)) in REGISTRY[1..].iter().enumerate() {
+            let index = offset + 1;
+            let previous = offset;
+            let mut memory = FakeMemory(Some(previous));
+            let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
+            let (mut frame, mut outgoing) = frame_pair();
+
+            garland.press(ButtonEvent::ShortPress, 200);
+            let mid = 200 + CROSSFADE_MS / 2;
+            garland.render(&mut frame, &mut outgoing, mid);
+            let old = registry_frame(previous, &mapping, mid);
+            let new = registry_frame(index, &mapping, mid - 200);
+            for (i, pixel) in frame.pixels().iter().enumerate() {
+                assert!(
+                    between(old[i], new[i], *pixel),
+                    "Аддон {name}: Пиксель {i} вне кроссфейда"
+                );
+            }
+
+            let end = 200 + CROSSFADE_MS;
+            garland.render(&mut frame, &mut outgoing, end);
+            assert_eq!(
+                frame.pixels(),
+                registry_frame(index, &mapping, end - 200).as_ref(),
+                "Аддон {name}: после кроссфейда Лента — чистый Эффект"
+            );
+        }
+    }
+
     /// Гирлянда стартует с первого Реестра: статичный цвет горит всей Лентой.
     #[test]
     fn starts_with_first_effect_lit() {
@@ -352,27 +388,31 @@ mod tests {
         let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
 
         assert_eq!(garland.effect_name(), "Статичный цвет");
-        garland.press(ButtonEvent::ShortPress, 100);
-        assert_eq!(garland.effect_name(), "Радуга по проводу");
+        for expected in ["Радуга по проводу", "Кольца и волны", "Дождь и снег"]
+        {
+            garland.press(ButtonEvent::ShortPress, 100);
+            assert_eq!(garland.effect_name(), expected);
+        }
         garland.press(ButtonEvent::LongPress, 200);
         assert_eq!(
             garland.effect_name(),
-            "Радуга по проводу",
+            "Дождь и снег",
             "Покой не меняет Текущий эффект"
         );
     }
 
-    /// Короткие нажатия листают Реестр по кругу: два нажатия на Реестре из
-    /// двух Эффектов возвращают статичный цвет по завершении кроссфейда.
+    /// Короткие нажатия листают Реестр по кругу: полный обход возвращает
+    /// статичный цвет по завершении кроссфейда.
     #[test]
     fn short_press_wraps_around_registry() {
         let mut memory = FakeMemory(None);
         let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
         let (mut frame, mut outgoing) = frame_pair();
 
-        garland.press(ButtonEvent::ShortPress, 200);
-        garland.press(ButtonEvent::ShortPress, 300);
-        garland.render(&mut frame, &mut outgoing, 300 + CROSSFADE_MS);
+        for _ in 0..REGISTRY.len() {
+            garland.press(ButtonEvent::ShortPress, 200);
+        }
+        garland.render(&mut frame, &mut outgoing, 200 + CROSSFADE_MS);
 
         assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
     }
@@ -491,7 +531,10 @@ mod tests {
 
         {
             let mut garland = Garland::new(REGISTRY, mapping(), 0, &mut memory);
-            garland.press(ButtonEvent::ShortPress, 400); // по кругу — снова первый
+            // Долистываем по кругу до первого: реестр замкнулся.
+            for _ in 1..REGISTRY.len() {
+                garland.press(ButtonEvent::ShortPress, 400);
+            }
         }
         assert_eq!(memory.0, Some(0));
     }
@@ -596,19 +639,24 @@ mod tests {
             .map(|(old, new)| blend(*old, *new, MAX_ALPHA / 2))
             .collect();
 
-        // Середина нового кроссфейда: пиксели между снимком и статичным.
+        // Середина нового кроссфейда: пиксели между снимком и кольцами
+        // (третьим Аддоном Реестра).
         let mid = 600 + CROSSFADE_MS / 2;
         garland.render(&mut frame, &mut outgoing, mid);
+        let target = registry_frame(2, &mapping, mid - 600);
         for (i, pixel) in frame.pixels().iter().enumerate() {
             assert!(
-                between(snapshot[i], WARM_WHITE, *pixel),
+                between(snapshot[i], target[i], *pixel),
                 "Пиксель {i} вне кроссфейда"
             );
         }
 
-        // Конец: чистый статичный цвет.
+        // Конец: чистые кольца на их собственной шкале.
         garland.render(&mut frame, &mut outgoing, 600 + CROSSFADE_MS);
-        assert_eq!(frame.pixels(), &[WARM_WHITE; 12]);
+        assert_eq!(
+            frame.pixels(),
+            registry_frame(2, &mapping, CROSSFADE_MS).as_ref()
+        );
     }
 
     /// Длинное нажатие посреди кроссфейда гасит Ленту сразу, а пробуждение

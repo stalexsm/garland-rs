@@ -9,7 +9,9 @@ edition = "2024"
 rust-version = "1.95"
 
 [workspace.dependencies]
+effect-precipitation = { path = "crates/effects/effect-precipitation" }
 effect-rainbow = { path = "crates/effects/effect-rainbow" }
+effect-rings = { path = "crates/effects/effect-rings" }
 effect-solid = { path = "crates/effects/effect-solid" }
 garland-core = { path = "crates/garland-core" }
 
