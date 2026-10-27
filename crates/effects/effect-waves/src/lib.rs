@@ -51,9 +51,11 @@ const PHASE_LIMIT: u16 = 360;
 
 /// Случайная фаза 0..359: формула [`Rng16::random8_below`] с широким
 /// пределом — `random8_below(360)` задания не помещается в байтовый
-/// предел метода ядра, формула та же: `(random8 · 360) >> 8`.
+/// предел метода ядра, формула та же: `(random8 · 360) >> 8`. Промежуточное
+/// умножение — в u32: 255·360 больше u16 (переполнение-паника в
+/// dev-сборке).
 fn phase_roll(rng: &mut Rng16) -> u16 {
-    (u16::from(rng.random8()) * PHASE_LIMIT) >> 8
+    ((u32::from(rng.random8()) * u32::from(PHASE_LIMIT)) >> 8) as u16
 }
 
 /// Полный круг синуса ядра FastLED: [`sin8`] меряет угол в 1/256 круга.
@@ -201,6 +203,17 @@ impl Effect for Waves {
 mod tests {
     use super::*;
     use garland_core::{Corner, Layout};
+
+    /// Бросок фазы не переполняется ни на каком байте ГПСЧ: 255·360 больше
+    /// u16, промежуточное умножение обязано быть в u32 (иначе dev-сборка
+    /// с overflow-checks паникует на броске ≥ 183).
+    #[test]
+    fn phase_roll_stays_within_degrees() {
+        let mut rng = Rng16::new();
+        for _ in 0..1000 {
+            assert!(phase_roll(&mut rng) < PHASE_LIMIT);
+        }
+    }
 
     /// Ширина тестовой Матрицы, Пикселей.
     const W: usize = 8;

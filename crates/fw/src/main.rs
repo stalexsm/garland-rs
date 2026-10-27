@@ -159,6 +159,18 @@ const WIFI_CREDENTIALS_SET: bool = !WIFI_SSID.is_empty() && !WIFI_PASS.is_empty(
 #[cfg(target_arch = "riscv32")]
 const PIXELS: usize = MATRIX_W as usize * MATRIX_H as usize;
 
+// Потолок размеров Матрицы для полей Аддонов: эффекты кладут
+// `field[y·w + x]` в `[Rgb8; NOISE_MAX_SIDE²]` — крупная Матрица должна
+// ломать сборку, а не паниковать на первом такте после того, как номер
+// эффекта уже сохранён в NVS (иначе паника повторится после каждого ребута).
+#[cfg(target_arch = "riscv32")]
+const _: () = {
+    assert!(
+        MATRIX_W <= garland_core::NOISE_MAX_SIDE && MATRIX_H <= garland_core::NOISE_MAX_SIDE,
+        "Матрица крупнее потолка эффектов (NOISE_MAX_SIDE × NOISE_MAX_SIDE)"
+    );
+};
+
 // Такт обновления кадров, мс: около 30 кадров/с — частые записи греют гейт
 // драйвера, для приветствия точность не критична.
 #[cfg(target_arch = "riscv32")]
