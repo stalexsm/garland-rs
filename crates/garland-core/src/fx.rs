@@ -3,9 +3,8 @@
 //! палитры и rainbow-конверсия HSV.
 //!
 //! Точные целочисленные порты алгоритмов FastLED 3.6.0 (семантика
-//! `FASTLED_SCALE8_FIXED`, `FASTLED_BLEND_FIXED`, `FASTLED_NOISE_FIXED`) —
-//! см. `docs/research/fastled-primitives.md`. Всё чисто целочисленное,
-//! без float: одинаково на хосте и устройстве.
+//! `FASTLED_SCALE8_FIXED`, `FASTLED_BLEND_FIXED`, `FASTLED_NOISE_FIXED`).
+//! Всё чисто целочисленное, без float: одинаково на хосте и устройстве.
 
 use crate::color::{Hsv8, Rgb8};
 use crate::frame::Frame;
@@ -507,6 +506,20 @@ pub const PARTY_PALETTE: Palette16 = Palette16::new([
 /// ровно один экземпляр Текущего эффекта).
 pub const NOISE_MAX_SIDE: u16 = 64;
 
+/// Отсечка основания шума: слабые значения гасятся вовсе (постобработка
+/// `fillNoiseLED`).
+const NOISE_FLOOR: u8 = 16;
+/// Подъём контраста: к значению прибавляется 39/256 его самого.
+const NOISE_CONTRAST: u8 = 39;
+/// Скорости ниже этой — поле сглаживается во времени (картинка плывёт
+/// медленно, резкие перескоки размываются).
+const SMOOTHING_SPEED_MAX: u16 = 50;
+/// Доля старого значения при максимальном сглаживании: 200 − speed·4.
+const SMOOTHING_BASE: u16 = 200;
+/// Граница яркой половины поля: выше — полная яркость, ниже — квадратичное
+/// гашение.
+const BRIGHT_SPLIT: u8 = 127;
+
 /// Движок шумовых эффектов (`fillNoiseLED`, Noise + Palette):
 /// квадратное поле 8-битного шума Перлина с дрейфом координат, сглаживанием
 /// во времени и окраской через палитру. Эффект владеет полем и каждый Кадр
@@ -548,7 +561,11 @@ impl NoiseField {
     pub fn tick(&mut self, scale: u16, speed: u16) {
         // Сглаживание во времени: при медленном движении поле тянется к
         // новым значениям лишь частично (доля 256−sm от нового значения).
-        let smoothing: u16 = if speed < 50 { 200 - speed * 4 } else { 0 };
+        let smoothing: u16 = if speed < SMOOTHING_SPEED_MAX {
+            SMOOTHING_BASE - speed * 4
+        } else {
+            0
+        };
         let side = usize::from(self.side);
         for row in 0..side {
             let x_offset = scale.wrapping_mul(row as u16);
@@ -559,8 +576,8 @@ impl NoiseField {
                     self.y.wrapping_add(y_offset),
                     self.z,
                 );
-                value = qsub8(value, 16);
-                value = qadd8(value, scale8(value, 39));
+                value = qsub8(value, NOISE_FLOOR);
+                value = qadd8(value, scale8(value, NOISE_CONTRAST));
                 if smoothing != 0 {
                     let old = self.data[row * side + col];
                     let inv = (256 - smoothing) as u8;
@@ -585,7 +602,7 @@ impl NoiseField {
             for iy in 0..h {
                 let index = self.data[iy * side + ix];
                 let bri_raw = self.data[ix * side + iy];
-                let bri = if bri_raw > 127 {
+                let bri = if bri_raw > BRIGHT_SPLIT {
                     255
                 } else {
                     dim8_raw(bri_raw.wrapping_mul(2))
