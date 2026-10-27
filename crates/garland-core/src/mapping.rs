@@ -58,6 +58,16 @@ impl Mapping {
         self.w as usize * self.h as usize
     }
 
+    /// Ширина Матрицы, Пикселей.
+    pub const fn width(&self) -> u16 {
+        self.w
+    }
+
+    /// Высота Матрицы, Пикселей.
+    pub const fn height(&self) -> u16 {
+        self.h
+    }
+
     /// Индекс Пикселя на Ленте для координат (x, y); `None` вне Матрицы.
     pub fn strip_index(&self, x: u16, y: u16) -> Option<usize> {
         if x >= self.w || y >= self.h {
