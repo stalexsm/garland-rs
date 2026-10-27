@@ -1,6 +1,6 @@
 # Исследование: точные целочисленные алгоритмы примитивов FastLED (для порта в garland-rs)
 
-**Цель:** перенести математику эффектов экосистемы FastLED (прошивка GyverMatrixOS от AlexGyver) в no_std Rust для ESP32-C6 — только целые числа, без float, без внешних зависимостей в ядре. Актуальность сверки: последний релиз FastLED на момент исследования — 3.10.8 (дата публикации по GitHub API: 2026-10-18).
+**Цель:** перенести математику эффектов экосистемы FastLED (портируемые прошивки) в no_std Rust для ESP32-C6 — только целые числа, без float, без внешних зависимостей в ядре. Актуальность сверки: последний релиз FastLED на момент исследования — 3.10.8 (дата публикации по GitHub API: 2026-10-18).
 
 **Обозначения достоверности:** формулы и таблицы ниже — прямое содержимое исходников FastLED (прочитаны построчно по ссылкам). Пометки *«вывод»* — интерпретация/рекомендация исследователя, не цитата.
 
@@ -8,9 +8,9 @@
 
 ## 0. Методика и базовые соглашения
 
-- Основная версия для порта: **FastLED 3.6.0** (тег) — классическая раскладка `src/lib8tion/*.h`, `src/hsv2rgb.cpp`, `src/noise.cpp`, `src/colorutils.cpp`, `src/pixeltypes.h`, та же, против которой собирался GyverMatrixOS. Сверка с последним релизом **3.10.8**: в нём файлы переехали в `src/fl/math/*` (старые пути стали форвардингами), алгоритмы `random8` и beat-генераторов проверены байт-в-байт — идентичны (в beat-генераторах 3.10.8 добавлен только clamp `result > highest`). Остальные файлы 3.10.8 отдельно не сверялись (см. «Missing evidence»).
+- Основная версия для порта: **FastLED 3.6.0** (тег) — классическая раскладка `src/lib8tion/*.h`, `src/hsv2rgb.cpp`, `src/noise.cpp`, `src/colorutils.cpp`, `src/pixeltypes.h`, та же, против которой собирался исходной прошивки. Сверка с последним релизом **3.10.8**: в нём файлы переехали в `src/fl/math/*` (старые пути стали форвардингами), алгоритмы `random8` и beat-генераторов проверены байт-в-байт — идентичны (в beat-генераторах 3.10.8 добавлен только clamp `result > highest`). Остальные файлы 3.10.8 отдельно не сверялись (см. «Missing evidence»).
 - На не-AVR платформах (ESP32-C6) FastLED компилирует **чистые C-ветки**: в `lib8tion.h` для «unspecified architecture» задаются `QADD8_C 1, SCALE8_C 1, BLEND8_C 1` и т.д. Все AVR-asm варианты (`*_AVRASM`, `*_LEAVING_R1_DIRTY`, `memmove8`) портировать не нужно. Источник: `src/lib8tion.h` (выбор C-реализаций).
-- Дефолты конфига, влияющие на результаты (источник `src/fastled_config.h`): `FASTLED_SCALE8_FIXED 1`, `FASTLED_BLEND_FIXED 1`, `FASTLED_NOISE_FIXED 1`. Портировать нужно поведение именно с этими флагами — это то, что видно на LEDs в GyverMatrixOS.
+- Дефолты конфига, влияющие на результаты (источник `src/fastled_config.h`): `FASTLED_SCALE8_FIXED 1`, `FASTLED_BLEND_FIXED 1`, `FASTLED_NOISE_FIXED 1`. Портировать нужно поведение именно с этими флагами — это то, что видно на LEDs в исходной прошивки.
 - `fract8` = `u8` в смысле «n/256»; `fract16` = `u16` = «n/65536»; `accum88` = `u16` в формате Q8.8 (8 бит целых, 8 бит дробных).
 
 ---
@@ -58,7 +58,7 @@ lerp8by8(a, b, frac)   = if b > a { a + scale8(b-a, frac) } else { a - scale8(a-
 
 ## 2. hsv2rgb_rainbow (именно rainbow, не spectrum)
 
-**Семантика.** Основная конвертация FastLED (все `CRGB = CHSV`, `setHSV`, эффекты GyverMatrixOS идут через неё — `pixeltypes.h`: конструктор `CRGB(const CHSV&)` вызывает именно `hsv2rgb_rainbow`). Цветовой круг разбит на 8 секций по 32 градации hue; между опорными точками — кусочно-линейный градиент с фиксированными «полками» 255/171/170/85 (учитывает повышенную воспринимаемую яркость жёлтого). Это НЕ плавная спектральная конвертация: `hsv2rgb_spectrum` в `hsv2rgb.cpp` — отдельная функция (просто `hue = scale8(hue, 191)` + raw-конвертация), эффекты её не используют.
+**Семантика.** Основная конвертация FastLED (все `CRGB = CHSV`, `setHSV`, эффекты исходной прошивки идут через неё — `pixeltypes.h`: конструктор `CRGB(const CHSV&)` вызывает именно `hsv2rgb_rainbow`). Цветовой круг разбит на 8 секций по 32 градации hue; между опорными точками — кусочно-линейный градиент с фиксированными «полками» 255/171/170/85 (учитывает повышенную воспринимаемую яркость жёлтого). Это НЕ плавная спектральная конвертация: `hsv2rgb_spectrum` в `hsv2rgb.cpp` — отдельная функция (просто `hue = scale8(hue, 191)` + raw-конвертация), эффекты её не используют.
 
 **Таблица градиента** (источник: `src/hsv2rgb.cpp`, функция `hsv2rgb_rainbow`; константы `K255=255, K171=171, K170=170, K85=85`; флаги `Y1=1, Y2=0, G2=0, Gscale=0` — берётся ветка Y1):
 
@@ -93,7 +93,7 @@ if val != 255:
     else:        r,g,b = scale8(r, val), ...           // FIXED-умножение
 ```
 
-**Про apply_gamma_video.** Внутри `hsv2rgb_rainbow` гамма **не применяется**. `applyGamma_video` — отдельная пост-обработка в `src/colorutils.cpp`, и она **float** (`pow(orig, gamma) * 255.0`), с защитой «не гасить ненулевое в ноль». Для no_std-порта она не годится. Эквивалентные целочисленные замены (вывод): 256-байтная LUT гаммы, посчитанная офлайн, либо вообще отказ — в GyverMatrixOS гамму не вызывают; «видео»-приглушение внутри rainbow-конвертации уже встроено.
+**Про apply_gamma_video.** Внутри `hsv2rgb_rainbow` гамма **не применяется**. `applyGamma_video` — отдельная пост-обработка в `src/colorutils.cpp`, и она **float** (`pow(orig, gamma) * 255.0`), с защитой «не гасить ненулевое в ноль». Для no_std-порта она не годится. Эквивалентные целочисленные замены (вывод): 256-байтная LUT гаммы, посчитанная офлайн, либо вообще отказ — в исходной прошивки гамму не вызывают; «видео»-приглушение внутри rainbow-конвертации уже встроено.
 
 **Rust-скетч (ядро):**
 
@@ -154,7 +154,7 @@ result  = partial >> 8;
 | `fadeToBlackBy(leds, n, fadeBy)`, `fade_raw` | `nscale8(255 - fadeBy)` → `nscale8x3` | FIXED: `(ch*(scale+1))>>8`, может уйти в 0 |
 | `fadeLightBy`, `fade_video`, `CRGB::nscale8_video` | `nscale8_video(255 - fadeBy)` | video: ненулевое не гаснет (`(ch*sc>>8)+1`) |
 
-Метод `CRGB::fadeToBlackBy(fadefactor)` (`pixeltypes.h`) = `nscale8x3(r,g,b, 255-fadefactor)`. GyverMatrixOS-«fader» эквивалентен `fadeToBlackBy`.
+Метод `CRGB::fadeToBlackBy(fadefactor)` (`pixeltypes.h`) = `nscale8x3(r,g,b, 255-fadefactor)`. исходной прошивки-«fader» эквивалентен `fadeToBlackBy`.
 
 **Rust:**
 
@@ -423,7 +423,7 @@ pub fn inoise8_u8(x: u16, y: u16) -> u8 {
 }
 ```
 
-**Как эффекты анимируют шум (GyverMatrixOS).** Источник: `firmware/GyverMatrixOS_v1.13/noise_effects.ino` (репозиторий AlexGyver/GyverMatrixWiFi — развитие GyverMatrixOS; в оригинале `AlexGyver/GyverMatrixBT`, `GyverMatrixOS_v1.12/noise_effects.ino`, тот же код). Паттерн — канонический порт примера FastLED «Noise + Palette»:
+**Как эффекты анимируют шум.** Паттерн — канонический порт примера FastLED «Noise + Palette»:
 
 - координаты `u16 x, y, z`; за кадр: **`z += speed`; `x += speed/8`; `y -= speed/16`** — вот эти инкременты и есть «движение» шума;
 - каждому пикселю (i,j): `inoise8(x + scale*i, y + scale*j, z)`;
@@ -433,7 +433,7 @@ pub fn inoise8_u8(x: u16, y: u16) -> u8 {
 - рендер: `ColorFromPalette(pal, index, bri)`; при `colorLoop` — `index += ihue++`; яркость `bri = 255 if bri>127 else dim8_raw(bri*2)`;
 - `speed` по умолчанию 20, задаётся слайдером в приложении; «скорость шума» ≈ инкремент z за кадр (типично 10..60 при 30–60 fps).
 
-**Про INA/INC:** идентификаторов `INA`/`INC` в прошивках GyverMatrixOS v1.12 (BT) и v1.13 (WiFi) **не найдено** (файлы `noise_effects.ino`, `effects.ino` просмотрены). Если имелась в виду анимация координат — это инкременты из списка выше (`z += speed` и т.д.). Вопрос остаётся открытым — см. «Missing evidence».
+**Про INA/INC:** идентификаторов `INA`/`INC` в прошивках исходной прошивки v1.12 (BT) и v1.13 (WiFi) **не найдено** (файлы `noise_effects.ino`, `effects.ino` просмотрены). Если имелась в виду анимация координат — это инкременты из списка выше (`z += speed` и т.д.). Вопрос остаётся открытым — см. «Missing evidence».
 
 ---
 
@@ -481,14 +481,14 @@ pub fn beatsin8(bpm: u16, lo: u8, hi: u8, t0: u32, ph: u8, ms: u32) -> u8 {
 
 **Ответ: да, портировать минимальную палитровую систему; вместе с HSV.** Обоснование:
 
-- 8 из 9 полноэкранных noise-эффектов GyverMatrixOS рендерят через `ColorFromPalette(currentPalette, index, bri)` со стандартными палитрами (`RainbowColors_p`, `CloudColors_p`, `LavaColors_p`, `ForestColors_p`, `OceanColors_p`, `PartyColors_p`, `RainbowStripeColors_p`) — источник: `noise_effects.ino`. Без палитр эти эффекты не переносятся без переписывания.
+- 8 из 9 полноэкранных noise-эффектов исходной прошивки рендерят через `ColorFromPalette(currentPalette, index, bri)` со стандартными палитрами (`RainbowColors_p`, `CloudColors_p`, `LavaColors_p`, `ForestColors_p`, `OceanColors_p`, `PartyColors_p`, `RainbowStripeColors_p`) — источник: `noise_effects.ino`. Без палитр эти эффекты не переносятся без переписывания.
 - При этом `madnessNoise` и масса мелких эффектов работают напрямую с `CHSV`, так что HSV-конвертация нужна в любом случае. Это не «или-или».
 
 **Что именно переносить** (источник: `src/colorutils.cpp`, `ColorFromPalette(const CRGBPalette16&, ...)`):
 
 - `CRGBPalette16` = `[CRGB; 16]` (48 байт) — этого достаточно (варианты 32/256 не нужны).
 - Алгоритм (LINEARBLEND): `hi4 = index >> 4`, `lo4 = index & 0x0F`; `f2 = lo4 << 4` (0..240), `f1 = 255 - f2`; результат `scale8(c1.ch, f1) + scale8(c2.ch, f2)` по каналам; сосед для hi4==15 — запись 0 (круговой заворот); при `lo4 == 0` — вернуть запись как есть.
-- `NOBLEND`: всегда `pal[index >> 4]`. `LINEARBLEND_NOWRAP`: предварительно `index = map8(index, 0, 239)` — использовать только если нужны разрывные палитры; для Gyver-эффектов хватает LINEARBLEND/NOBLEND (*вывод*).
+- `NOBLEND`: всегда `pal[index >> 4]`. `LINEARBLEND_NOWRAP`: предварительно `index = map8(index, 0, 239)` — использовать только если нужны разрывные палитры; для портируемых эффектов хватает LINEARBLEND/NOBLEND (*вывод*).
 - Яркостный параметр: если `brightness != 255` — `brightness += 1` и `scale8` (FIXED) по ненулевым каналам; если 0 — чёрный.
 - Встроенные палитры — статические массивы 16×RGB из `src/colorpalettes.cpp` (там же их байты), копируются как константы.
 
@@ -513,7 +513,7 @@ pub fn color_from_palette(pal: &[(u8, u8, u8); 16], index: u8, bri: u8, blend: b
 }
 ```
 
-Сложность — около 60 строк плюс таблицы палитр; проще, чем изобретать замену, и даёт бит-в-бит одинаковую картинку с GyverMatrixOS (*вывод*).
+Сложность — около 60 строк плюс таблицы палитр; проще, чем изобретать замену, и даёт бит-в-бит одинаковую картинку с исходной прошивки (*вывод*).
 
 ---
 
@@ -525,7 +525,7 @@ pub fn color_from_palette(pal: &[(u8, u8, u8); 16], index: u8, bri: u8, blend: b
 - `random8()` — сумма байтов, не `>>8` (§5).
 - beat-формулы — с обязательным wrapping-переполнением `u32` (§8).
 - `inoise8`: индекс `A+1` может быть 256 — таблица перестановок 257 элементов (§7).
-- Смешение `fadeToBlackBy` (plain) и `fadeLightBy` (video) даёт разный визуальный «шлейф» — в эффектах Gyver встречаются оба варианта поведения, выбирать по эффекту.
+- Смешение `fadeToBlackBy` (plain) и `fadeLightBy` (video) даёт разный визуальный «шлейф» — в портируемых эффектах встречаются оба варианта поведения, выбирать по эффекту.
 
 ---
 
@@ -543,19 +543,18 @@ pub fn color_from_palette(pal: &[(u8, u8, u8); 16], index: u8, bri: u8, blend: b
 - CRGB/CHSV, nscale8/nscale8_video/fadeToBlackBy-методы: <https://raw.githubusercontent.com/FastLED/FastLED/3.6.0/src/pixeltypes.h>
 - Дефолты FASTLED_SCALE8_FIXED/FASTLED_BLEND_FIXED/FASTLED_NOISE_FIXED: <https://raw.githubusercontent.com/FastLED/FastLED/3.6.0/src/fastled_config.h>
 - Сверка с 3.10.8: <https://raw.githubusercontent.com/FastLED/FastLED/3.10.8/src/fl/math/random8.h>, <https://raw.githubusercontent.com/FastLED/FastLED/3.10.8/src/fl/math/beat.h> (идентичны 3.6.0; в beat добавлен clamp), факт переезда файлов: <https://raw.githubusercontent.com/FastLED/FastLED/master/src/lib8tion/scale8.h> (форвардинг в `fl/math/`)
-- GyverMatrixOS, анимация шума и палитры: <https://raw.githubusercontent.com/AlexGyver/GyverMatrixWiFi/master/firmware/GyverMatrixOS_v1.13/noise_effects.ino>; оригинал: <https://github.com/AlexGyver/GyverMatrixBT> (`firmware/GyverMatrixOS_v1.12/noise_effects.ino`)
 - Версия/дата релиза 3.10.8: GitHub API `repos/FastLED/FastLED/releases/latest`
 
 **Отклонённые/деприоритизированные источники:** статьи и форки-«пересказы» алгоритмов FastLED (вторичны); `colorutils.h` 3.6.0 (типы палитр — взяты по использованию в `colorutils.cpp`, отдельного чтения не потребовалось).
 
 ## Contradictions
 - Постановка задачи предполагала «sin8 — LUT 256 байт» и «fadeToBlackBy = scale8_video». По первичным исходникам верно обратное: sin8 — кусочно-линейное вычисление с 8-байтовой таблицей (`trig8.h`), fadeToBlackBy — plain `nscale8x3`, а video-вариант — это `fadeLightBy`/`fade_video` (`colorutils.cpp`, `pixeltypes.h`). Оба расхождения зафиксированы в §3 и §6.
-- «INA/INC» не обнаружены в коде GyverMatrixOS — см. Missing evidence.
+- «INA/INC» не обнаружены в коде исходной прошивки — см. Missing evidence.
 
 ## Missing evidence
-- Значение «INA/INC» из постановки задачи не верифицировано: таких идентификаторов нет в `noise_effects.ino`/`effects.ino` GyverMatrixOS v1.12/v1.13. Возможно, это константы из другого форка/статьи; типовые скорости даны в §7.
+- Значение «INA/INC» из постановки задачи не верифицировано: таких идентификаторов нет в `noise_effects.ino`/`effects.ino` исходной прошивки v1.12/v1.13. Возможно, это константы из другого форка/статьи; типовые скорости даны в §7.
 - Файлы hsv2rgb/noise/colorutils/scale8/trig8 в новом слое 3.10.8 (`src/fl/math/*`) не сверялись попозиционно — сверены только `random8.h` и `beat.h`. Исторически lib8tion-алгоритмы стабильны, но при желании можно допроверить.
 
 ## Next steps
-- Допроверить `src/fl/math/trig8.h`, `src/fl/math/hsv2rgb*`, `src/fl/math/noise/*` в 3.10.8, если целевой ориентир — новейший FastLED, а не эпоха GyverMatrixOS.
+- Допроверить `src/fl/math/trig8.h`, `src/fl/math/hsv2rgb*`, `src/fl/math/noise/*` в 3.10.8, если целевой ориентир — новейший FastLED, а не эпоха исходной прошивки.
 - Уточнить у постановщика, что имелось в виду под INA/INC (какой репозиторий/файл).
