@@ -31,9 +31,8 @@ pub enum Request<'a> {
     Malformed,
 }
 
-/// Вместимость буфера ответа страницы: заголовки + тело с версией, формой
-/// заливки с паролем и скриптом SHA256 (сейчас ~1,6 КБ, с запасом на
-/// будущие поля формы).
+/// Вместимость буфера ответа страницы: сейчас страница занимает ~1,6 КБ,
+/// ёмкость взята с запасом.
 pub const RESPONSE_MAX: usize = 3072;
 
 /// Заголовок ответа до значения Content-Length.
@@ -48,14 +47,11 @@ const HEAD_END: &[u8; 4] = b"\r\n\r\n";
 /// Начало HTML-тела страницы (до версии Прошивки).
 const PAGE_OPEN: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Гирлянда</title></head><body><h1>Гирлянда</h1><p>Версия Прошивки: ";
 
-/// Форма заливки образа OTA после версии: пароль заливки (переменная сборки
-/// `OTA_PASS`) и сумма SHA256 образа уходят заголовками `X-OTA-Pass` и
-/// `X-OTA-SHA256` (считается в браузере через crypto.subtle), файл —
-/// целиком, без multipart, методом fetch.
+/// Форма заливки OTA: файл уходит целиком методом fetch, пароль и сумма
+/// SHA256 (считается в браузере) — заголовками `X-OTA-Pass` и `X-OTA-SHA256`.
 const PAGE_FORM_OTA: &str = "</p><h2>OTA-обновление</h2><p>Выберите файл образа (espflash save-image, .bin) и введите пароль OTA (переменная сборки OTA_PASS): Гирлянда сверит SHA256, запишет образ в свободный Слот и перезагрузится. Во время заливки не отключайте питание.</p><form onsubmit=\"ota(event)\"><p><input type=\"file\" accept=\".bin\" required> <input type=\"password\" id=\"ota-pass\" placeholder=\"Пароль OTA\" required> <button>Залить и перезагрузить</button></p></form><p id=\"ota-status\"></p><script>async function ota(e){e.preventDefault();const s=document.getElementById('ota-status');const file=e.target.querySelector('input[type=file]').files[0];const pass=document.getElementById('ota-pass').value;s.textContent='Считаю SHA-256…';try{const hex=[...new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer()))].map(b=>b.toString(16).padStart(2,'0')).join('');s.textContent='Заливаю…';const r=await fetch('/ota',{method:'POST',body:file,headers:{'X-OTA-Pass':pass,'X-OTA-SHA256':hex}});if(r.ok){s.textContent='Принято — Гирлянда перезагружается…';setTimeout(()=>location.reload(),15000)}else{s.textContent='Ошибка '+r.status}}catch(_){s.textContent='Обрыв соединения — образ не принят'}}</script></body></html>";
 
-/// Хвост страницы, когда заливка отключена (пароль не задан при сборке):
-/// вместо формы — пояснение.
+/// Хвост страницы при отключённой заливке: вместо формы — пояснение.
 const PAGE_FORM_LOCKED: &str = "</p><p>OTA-обновление отключено: пароль заливки (OTA_PASS) не задан при сборке.</p></body></html>";
 
 /// Записать в буфер HTTP-ответ 200 со страницей Гирлянды: заголовки с верным
@@ -142,8 +138,7 @@ pub const TEXT_OTA_UNAUTHORIZED: &str = "Неверный пароль зали�
 pub const TEXT_OTA_LOCKED: &str =
     "Заливка отключена: пароль заливки (OTA_PASS) не задан при сборке\n";
 
-/// Тело ответа на образ с чужой суммой SHA256: Слот остаётся неактивным,
-/// прежняя Прошивка продолжает работать.
+/// Тело ответа, когда сумма SHA256 не совпала: активации нет.
 pub const TEXT_BAD_DIGEST: &str = "Контрольная сумма SHA256 не сошлась — образ не активирован\n";
 
 /// Тело ответа, когда образ не помещается в свободный Слот.
@@ -165,11 +160,10 @@ pub fn write_plain(page: &mut heapless::String<RESPONSE_MAX>, status: &str, text
     put(page, text);
 }
 
-/// Разобрать начало запроса (до `\r\n\r\n`): `None` — заголовок ещё неполный,
-/// ждать продолжения из сокета. `known_hosts` — имена/адреса, под которыми
-/// владелец обращается к Гирляндe (DHCP-имя и выданный адрес): Origin своей
-/// страницы обязан быть одним из них — сверка с Host из самого запроса
-/// обходилась бы DNS-rebinding'ом.
+/// Разобрать начало запроса (до `\r\n\r\n`): `None` — заголовок ещё
+/// неполный, ждать продолжения из сокета. `known_hosts` — имена Гирлянды
+/// (DHCP-имя и адрес): Origin заливки обязан быть одним из них, сверка
+/// с Host из запроса обходится DNS-rebinding'ом.
 pub fn parse_request<'a>(buf: &'a [u8], known_hosts: &[&str]) -> Option<Request<'a>> {
     let head_end = find_head_end(buf)?;
     let head = &buf[..head_end];
@@ -255,11 +249,10 @@ fn content_length(head: &[u8]) -> Option<usize> {
     decimal_usize(value.as_bytes())
 }
 
-/// Похоже ли на запрос с чужой страницы (CSRF): браузерный `fetch` всегда
-/// шлёт Origin, и у страницы самой Гирлянды он — одно из известных имён
-/// устройства (`known_hosts`). Host из самого запроса намеренно не
-/// участвует: при DNS-rebinding атакующая страница подставляет совпадающий
-/// с Origin Host. curl Origin не шлёт вовсе — не браузер, CSRF невозможен.
+/// Чужая ли страница шлёт заливку (CSRF): у страницы Гирлянды Origin —
+/// одно из `known_hosts`. Host из запроса не сверяется: при DNS-rebinding
+/// он совпадает с Origin атакующей страницы. curl Origin не шлёт — CSRF
+/// на него не рассчитан.
 fn cross_origin(head: &[u8], known_hosts: &[&str]) -> bool {
     let Some(origin) = header_value(head, b"Origin") else {
         return false;
@@ -274,8 +267,7 @@ fn cross_origin(head: &[u8], known_hosts: &[&str]) -> bool {
     !known_hosts.contains(&origin_host)
 }
 
-/// Значение заголовка `X-OTA-Pass` как текст; `None` — заголовка нет или он
-/// не текст. Пароль сверяет вызывающий ([`authorize_ota`]) — до чтения тела.
+/// Значение заголовка `X-OTA-Pass`; `None` — заголовка нет или он не текст.
 pub fn ota_password(head: &[u8]) -> Option<&str> {
     core::str::from_utf8(header_value(head, b"X-OTA-Pass")?).ok()
 }
@@ -435,8 +427,7 @@ mod tests {
                 digest: BYTES32
             })
         );
-        // Часть тела может прийти вместе с заголовком — разбору не мешает
-        // (хвост — байтовый литерал: hex-escapes строки ограничены 0x7F).
+        // Часть тела может прийти вместе с заголовком — разбору не мешает.
         let mut body =
             format!("POST /ota HTTP/1.1\r\nContent-Length: 4\r\nX-OTA-SHA256: {HEX32}\r\n\r\n")
                 .into_bytes();
@@ -508,9 +499,8 @@ mod tests {
         );
     }
 
-    /// DNS-rebinding: атакующая страница с A-записью на адрес Гирлянды шлёт
-    /// совпадающую пару Origin/Host — сверка Origin с известными именами
-    /// устройства её отсекает: Host из самого запроса не участвует.
+    /// Rebinding: пара Origin/Host совпадает, но Origin не из known_hosts —
+    /// отказ.
     #[test]
     fn rebinding_with_matching_host_is_rejected() {
         let known = &["garland", "192.168.4.1"];
