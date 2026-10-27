@@ -25,8 +25,7 @@
 #![no_std]
 
 use garland_core::{
-    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, advance_anchor, hsv2rgb_rainbow,
-    steps_since,
+    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, hsv2rgb_rainbow, take_steps,
 };
 
 /// Период такта исходных эффектов, мс: один шаг анимации раз в 80 мс.
@@ -245,12 +244,8 @@ impl Fire {
 impl Effect for Fire {
     fn render(&mut self, frame: &mut Frame<'_>, elapsed_ms: u32) {
         // Такты исходного алгоритма: досчитать все пропущенные шаги, затем вывести поле.
-        let steps = steps_since(self.last_ms, elapsed_ms, TICK_MS);
-        self.last_ms = advance_anchor(self.last_ms, elapsed_ms, TICK_MS);
-        if steps > 0 {
-            for _ in 0..steps {
-                self.step();
-            }
+        for _ in 0..take_steps(&mut self.last_ms, elapsed_ms, TICK_MS) {
+            self.step();
         }
         // Контракт Эффекта — заполнить Кадр целиком: поле и есть картинка
         // (Фреймбуферы Прошивки переиспользуются между Кадрами).

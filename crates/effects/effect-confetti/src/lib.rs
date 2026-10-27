@@ -16,8 +16,8 @@
 #![no_std]
 
 use garland_core::{
-    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, advance_anchor, fade_pixel,
-    hsv2rgb_rainbow, steps_since,
+    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, fade_pixel, hsv2rgb_rainbow,
+    take_steps,
 };
 
 /// Период такта, мс: пошаговые эффекты шагают раз в 80 мс.
@@ -97,12 +97,8 @@ impl Effect for Confetti {
             return;
         }
         // Время снаружи: все пропущенные такты догоняются разом.
-        let steps = steps_since(self.last_ms, elapsed_ms, TICK_MS);
-        self.last_ms = advance_anchor(self.last_ms, elapsed_ms, TICK_MS);
-        if steps > 0 {
-            for _ in 0..steps {
-                self.step();
-            }
+        for _ in 0..take_steps(&mut self.last_ms, elapsed_ms, TICK_MS) {
+            self.step();
         }
         // Кадр — копия постоянного поля: контракт Эффекта — заполнить
         // Фреймбуфер целиком (буферы Прошивки переиспользуются).

@@ -18,8 +18,7 @@
 #![no_std]
 
 use garland_core::{
-    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, advance_anchor, hsv2rgb_rainbow,
-    sin8, steps_since,
+    Effect, Frame, Hsv8, Mapping, NOISE_MAX_SIDE, Rgb8, Rng16, hsv2rgb_rainbow, sin8, take_steps,
 };
 
 /// Период такта, мс: пошаговые эффекты живут с темпом ~12 тактов/с.
@@ -191,12 +190,8 @@ impl Effect for Waves {
         if frame.is_empty() {
             return;
         }
-        let steps = steps_since(self.last_ms, elapsed_ms, TICK_MS);
-        self.last_ms = advance_anchor(self.last_ms, elapsed_ms, TICK_MS);
-        if steps > 0 {
-            for _ in 0..steps {
-                self.step();
-            }
+        for _ in 0..take_steps(&mut self.last_ms, elapsed_ms, TICK_MS) {
+            self.step();
         }
         self.draw(frame);
     }

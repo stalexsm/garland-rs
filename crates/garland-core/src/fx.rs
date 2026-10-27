@@ -648,6 +648,16 @@ pub fn advance_anchor(prev_ms: u32, now_ms: u32, tick_ms: u32) -> u32 {
     }
 }
 
+/// Списать такты эффекта за кадр: вернуть число шагов [`steps_since`] и
+/// передвинуть якорь `last_ms` вызовом [`advance_anchor`]. Единственная
+/// точка инварианта «якорь движется ровно раз за кадр с теми же
+/// аргументами» — Аддоны вызывают её вместо копии пары вызовов.
+pub fn take_steps(last_ms: &mut u32, now_ms: u32, tick_ms: u32) -> u32 {
+    let steps = steps_since(*last_ms, now_ms, tick_ms);
+    *last_ms = advance_anchor(*last_ms, now_ms, tick_ms);
+    steps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,5 +955,23 @@ mod tests {
             (CATCHUP_LIMIT + 1) * 80,
             "сброс шкалы — якорь на момент кадра"
         );
+    }
+
+    /// `take_steps` — единственная точка инварианта «якорь движется ровно
+    /// раз за кадр с теми же аргументами»: такты считаются, якорь встаёт
+    /// на границу такта, кадр внутри такта ничего не двигает, сброс шкалы
+    /// ставит якорь на текущее время.
+    #[test]
+    fn take_steps_counts_and_advances_anchor_once() {
+        let mut last_ms = 0;
+        assert_eq!(take_steps(&mut last_ms, 240, 80), 3);
+        assert_eq!(last_ms, 240, "якорь — граница догнанного такта");
+
+        assert_eq!(take_steps(&mut last_ms, 250, 80), 0);
+        assert_eq!(last_ms, 240, "кадр внутри такта не двигает якорь");
+
+        let jumped = 250 + (CATCHUP_LIMIT + 1) * 80;
+        assert_eq!(take_steps(&mut last_ms, jumped, 80), 0);
+        assert_eq!(last_ms, jumped, "сброс шкалы — якорь на момент кадра");
     }
 }
