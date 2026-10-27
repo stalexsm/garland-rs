@@ -13,6 +13,8 @@ use embassy_executor::Spawner;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
+// write! в heapless::String — через трейт fmt::Write.
+use core::fmt::Write as _;
 use esp_bootloader_esp_idf::partitions::Error as PartitionError;
 use esp_hal::system::software_reset;
 use esp_radio::wifi::{
@@ -27,6 +29,11 @@ pub const HOSTNAME: &str = "garland";
 
 /// Порт HTTP-сервера.
 const HTTP_PORT: u16 = 80;
+
+/// Общий бюджет фазы заголовка, мс: клиент, докидывающий байт заголовка
+/// реже таймаута сокета, не должен держать единственный HTTP-сервер
+/// (slowloris); честному браузеру хватает долей секунды.
+const HEAD_BUDGET_MS: u64 = 5000;
 
 /// Пауза между попытками подключения Wi-Fi, мс (канон примера esp-hal).
 const WIFI_RETRY_MS: u64 = 5000;
@@ -54,11 +61,14 @@ const OTA_REBOOT_DELAY_MS: u64 = 1000;
 /// Слоты сокетов стека: DHCP + TCP-сервер (канон примера esp-hal — 3).
 const STACK_SOCKETS: usize = 3;
 
+/// Известных имён Гирлянды для сверки Origin: DHCP-имя и выданный адрес.
+const KNOWN_HOSTS_MAX: usize = 2;
+
 /// Поднять сеть: контроллер Wi-Fi со сборочными учётными данными, стек
 /// embassy-net (DHCP + [`HOSTNAME`]) и задачи — коннектор, драйвер стека и
 /// HTTP-сервер. Вызывается из `main`, только когда учётные данные заданы.
 /// `flash` — отдельный экземпляр флеша для OTA-заливки (NVS живёт в задаче
-/// Ленты).
+/// Ленты); `ota_pass` — пароль заливки из сборки (пустой отключает заливку).
 // large_stack_frames меряет разовую инициализацию (конфиги Wi-Fi и стека);
 // кадр живёт только до первого spawn, задачи дальше работают без него.
 #[expect(
@@ -70,6 +80,7 @@ pub fn start(
     wifi: esp_hal::peripherals::WIFI<'static>,
     seed: u64,
     version: &'static str,
+    ota_pass: &'static str,
     flash: FlashStorage<'static>,
 ) {
     let station_config = Config::Station(
@@ -99,7 +110,9 @@ pub fn start(
 
     spawner.spawn(net_task(runner).expect("задача сетевого стека не поднялась"));
     spawner.spawn(connection_task(controller).expect("задача Wi-Fi не поднялась"));
-    spawner.spawn(http_task(stack, version, flash).expect("задача HTTP-сервера не поднялась"));
+    spawner.spawn(
+        http_task(stack, version, ota_pass, flash).expect("задача HTTP-сервера не поднялась"),
+    );
     info!("Wi-Fi: SSID «{WIFI_SSID}», имя в сети — «{HOSTNAME}»");
 }
 
@@ -147,9 +160,15 @@ async fn connection_task(mut controller: WifiController<'static>) {
     reason = "фьючерс embassy-задачи выделяется статически (bss), стек не расходуется"
 )]
 #[embassy_executor::task]
-async fn http_task(stack: Stack<'static>, version: &'static str, mut flash: FlashStorage<'static>) {
+async fn http_task(
+    stack: Stack<'static>,
+    version: &'static str,
+    ota_pass: &'static str,
+    mut flash: FlashStorage<'static>,
+) {
     stack.wait_config_up().await;
     info!("HTTP: адрес получен, сервер на порту {HTTP_PORT}");
+    let config = HttpConfig { version, ota_pass };
     // Буферы сокета — в куче один раз: сокет пересоздаётся на каждое
     // соединение, буферы живут столько же, сколько задача.
     let rx: &'static mut [u8; SOCKET_RX_SIZE] = Box::leak(Box::new([0; SOCKET_RX_SIZE]));
@@ -159,6 +178,18 @@ async fn http_task(stack: Stack<'static>, version: &'static str, mut flash: Flas
     let mut response = heapless::String::<{ http::RESPONSE_MAX }>::new();
     let mut ota = ota::OtaBuffers::leak();
     loop {
+        // Известные имена Гирлянды для сверки Origin: DHCP-имя и выданный
+        // адрес — против DNS-rebinding, когда атакующая страница подставляет
+        // совпадающий с Origin Host. Пересчитываются на каждое соединение —
+        // аренда адреса может смениться. `ip` объявлен раньше `known_hosts`,
+        // чтобы пережить заимствование (порядок дропа — обратный объявлению).
+        let mut ip = heapless::String::<15>::new(); // 15 — длина «255.255.255.255»
+        let mut known_hosts: heapless::Vec<&str, KNOWN_HOSTS_MAX> = heapless::Vec::new();
+        let _ = known_hosts.push(HOSTNAME);
+        if let Some(config) = stack.config_v4() {
+            let _ = write!(ip, "{}", config.address.address());
+            let _ = known_hosts.push(ip.as_str());
+        }
         let mut socket = TcpSocket::new(stack, rx, tx);
         socket.set_timeout(Some(Duration::from_millis(TCP_TIMEOUT_MS)));
         if let Err(e) = socket.accept(HTTP_PORT).await {
@@ -168,7 +199,8 @@ async fn http_task(stack: Stack<'static>, version: &'static str, mut flash: Flas
         }
         serve(
             &mut socket,
-            version,
+            &config,
+            known_hosts.as_slice(),
             &mut head,
             &mut response,
             &mut flash,
@@ -176,6 +208,14 @@ async fn http_task(stack: Stack<'static>, version: &'static str, mut flash: Flas
         )
         .await;
     }
+}
+
+/// Неизменные данные HTTP-сервера: версия Прошивки и пароль заливки.
+struct HttpConfig {
+    /// Версия для страницы GET /.
+    version: &'static str,
+    /// Пароль заливки из сборки; пустой отключает заливку.
+    ota_pass: &'static str,
 }
 
 /// Обработать одно соединение: прочитать заголовок, ответить и закрыть.
@@ -187,23 +227,59 @@ async fn http_task(stack: Stack<'static>, version: &'static str, mut flash: Flas
 )]
 async fn serve(
     socket: &mut TcpSocket<'_>,
-    version: &str,
+    config: &HttpConfig,
+    known_hosts: &[&str],
     head: &mut [u8],
     response: &mut heapless::String<{ http::RESPONSE_MAX }>,
     flash: &mut FlashStorage<'static>,
     ota: &mut ota::OtaBuffers,
 ) {
-    match read_head(socket, head).await {
+    // Бюджет всей фазы заголовка: медленный клиент не держит сервер
+    // дольше HEAD_BUDGET_MS, что бы ни обещал таймаут бездеятельности.
+    let head_read = embassy_time::with_timeout(
+        Duration::from_millis(HEAD_BUDGET_MS),
+        read_head(socket, head),
+    )
+    .await;
+    match head_read {
         // Хвост буфера за `n` может содержать мусор прошлых запросов —
         // и разбор, и тело образа режутся по реально прочитанному.
-        Head::Complete(n) => match http::parse_request(&head[..n]) {
+        Ok(Head::Complete(n)) => match http::parse_request(&head[..n], known_hosts) {
             Some(http::Request::GetRoot) => {
-                http::write_page(response, version);
+                http::write_page(response, config.version, !config.ota_pass.is_empty());
                 send(socket, response.as_bytes()).await;
             }
-            Some(http::Request::PostOta { content_length }) => {
-                receive_image(socket, content_length, &head[..n], response, flash, ota).await;
-            }
+            Some(http::Request::PostOta {
+                content_length,
+                digest,
+            }) => match http::authorize_ota(config.ota_pass, http::ota_password(&head[..n])) {
+                http::OtaAccess::Granted => {
+                    receive_image(
+                        socket,
+                        content_length,
+                        digest,
+                        &head[..n],
+                        response,
+                        flash,
+                        ota,
+                    )
+                    .await;
+                }
+                http::OtaAccess::Locked => {
+                    warn!("HTTP: заливка отключена (OTA_PASS не задан)");
+                    reply(socket, response, "403 Forbidden", http::TEXT_OTA_LOCKED).await;
+                }
+                http::OtaAccess::Denied => {
+                    warn!("HTTP: неверный пароль заливки OTA");
+                    reply(
+                        socket,
+                        response,
+                        "401 Unauthorized",
+                        http::TEXT_OTA_UNAUTHORIZED,
+                    )
+                    .await;
+                }
+            },
             Some(http::Request::Other { method, path }) => {
                 info!("HTTP: нет маршрута {method} {path}");
                 send(socket, http::RESPONSE_NOT_FOUND.as_bytes()).await;
@@ -218,11 +294,12 @@ async fn serve(
             }
             None => warn!("HTTP: соединение закрыто без полного заголовка"),
         },
-        Head::Overflow => {
+        Ok(Head::Overflow) => {
             warn!("HTTP: заголовок длиннее {} байт", head.len());
             send(socket, http::RESPONSE_BAD_REQUEST.as_bytes()).await;
         }
-        Head::Closed => {}
+        Ok(Head::Closed) => {}
+        Err(_) => warn!("HTTP: заголовок не пришёл за {HEAD_BUDGET_MS} мс — соединение закрыто"),
     }
 }
 
@@ -244,13 +321,14 @@ async fn reply(
 async fn receive_image(
     socket: &mut TcpSocket<'_>,
     content_length: usize,
+    digest: [u8; 32],
     head: &[u8],
     response: &mut heapless::String<{ http::RESPONSE_MAX }>,
     flash: &mut FlashStorage<'static>,
     ota: &mut ota::OtaBuffers,
 ) {
     info!("OTA: заливка образа, Content-Length: {content_length}");
-    match stream_image(socket, content_length, head, flash, ota).await {
+    match stream_image(socket, content_length, digest, head, flash, ota).await {
         Ok(image_len) => {
             info!("OTA: образ {image_len} байт записан и активирован — перезагрузка");
             reply(socket, response, "200 OK", http::TEXT_OTA_OK).await;
@@ -313,6 +391,7 @@ async fn drain_body(
 async fn stream_image(
     socket: &mut TcpSocket<'_>,
     content_length: usize,
+    digest: [u8; 32],
     head: &[u8],
     flash: &mut FlashStorage<'static>,
     ota: &mut ota::OtaBuffers,
@@ -367,6 +446,14 @@ async fn stream_image(
         warn!("OTA: тело не похоже на образ ESP-IDF — активации нет");
         return Err(Rejection::NotAnImage);
     }
+    // Сумма дописанных байт сверяется с ожиданием клиента до активации:
+    // расхождение означает порчу или подмену образа в пути. Сумма
+    // гарантирует целостность, но не подлинность отправителя — её даёт
+    // только подписанный образ (см. ADR-0002).
+    if writer.image_digest() != digest {
+        warn!("OTA: сумма SHA256 не сошлась — активации нет");
+        return Err(Rejection::BadDigest);
+    }
     let image_len = writer.finish().map_err(Rejection::Flash)?;
     session.activate().map_err(Rejection::Flash)?;
     Ok(image_len)
@@ -381,6 +468,8 @@ enum Rejection {
     Empty,
     /// Тело не похоже на образ ESP-IDF.
     NotAnImage,
+    /// Сумма SHA256 тела не совпала с заголовком `X-OTA-SHA256`.
+    BadDigest,
     /// Образ не помещается в свободный Слот.
     TooLarge {
         /// Размер образа, байт.
@@ -399,6 +488,7 @@ impl Rejection {
             Rejection::Aborted => None,
             Rejection::Empty => Some(("400 Bad Request", "")),
             Rejection::NotAnImage => Some(("400 Bad Request", http::TEXT_BAD_IMAGE)),
+            Rejection::BadDigest => Some(("422 Unprocessable Entity", http::TEXT_BAD_DIGEST)),
             Rejection::TooLarge { size, capacity } => {
                 warn!("OTA: образ {size} байт не помещается в Слот {capacity} байт");
                 Some(("413 Payload Too Large", http::TEXT_PAYLOAD_TOO_LARGE))

@@ -27,6 +27,8 @@ effect-waves = { path = "crates/effects/effect-waves" }
 garland-core = { path = "crates/garland-core" }
 
 # crates
+# криптография (сверка SHA256 OTA-образа)
+sha2 = "0.11.1"
 heapless = "0.9.1"
 log = "0.4.34"
 

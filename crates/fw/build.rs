@@ -35,6 +35,10 @@ const DEFAULT_DRIVER_GATE: &str = "0";
 const DEFAULT_WIFI_SSID: &str = "";
 const DEFAULT_WIFI_PASS: &str = "";
 
+// Пароль OTA-заливки — только при сборке; пустое значение (дефолт)
+// отключает заливку: POST /ota отвечает 403, страница не показывает форму.
+const DEFAULT_OTA_PASS: &str = "";
+
 fn build_config() {
     for (name, default) in [
         ("MATRIX_W", DEFAULT_MATRIX_W),
@@ -48,6 +52,7 @@ fn build_config() {
         ("DRIVER_GATE", DEFAULT_DRIVER_GATE),
         ("WIFI_SSID", DEFAULT_WIFI_SSID),
         ("WIFI_PASS", DEFAULT_WIFI_PASS),
+        ("OTA_PASS", DEFAULT_OTA_PASS),
     ] {
         let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
         println!("cargo:rustc-env={name}={value}");
