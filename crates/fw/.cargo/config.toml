@@ -2,7 +2,9 @@
 include = ["esp-config.toml"]
 
 [target.riscv32imac-unknown-none-elf]
-runner = "espflash flash --monitor --chip esp32c6 --partition-table partitions.csv"
+# Свой Загрузчик с автооткатом (артефакт и рецепт пересборки — в bootloader/):
+# прекомпилированный espflash откат не умеет.
+runner = "espflash flash --monitor --chip esp32c6 --partition-table partitions.csv --bootloader bootloader/esp32c6-rollback.bin"
 
 [build]
 rustflags = [
