@@ -13,9 +13,11 @@ extern crate alloc;
 use crate::button::ButtonEvent;
 use alloc::boxed::Box;
 use effect_precipitation::Precipitation;
+use effect_pulse::Pulse;
 use effect_rainbow::Rainbow;
 use effect_rings::Rings;
 use effect_solid::Solid;
+use effect_sparkle::Sparkle;
 use garland_core::{Effect, Frame, Mapping, Rgb8, blend};
 
 /// Длительность кроссфейда смены эффектов, мс: ~0,8 с (канон WLED, спека
@@ -52,6 +54,10 @@ pub static REGISTRY: &[RegistryEntry] = &[
     }),
     ("Кольца и волны", |_mapping| Box::new(Rings)),
     ("Дождь и снег", |_mapping| Box::new(Precipitation)),
+    ("Пульс", |_mapping| Box::new(Pulse)),
+    ("Мерцание-снежинки", |_mapping| {
+        Box::new(Sparkle)
+    }),
 ];
 
 /// Уходящий Эффект: живёт, пока идёт его кроссфейд с Текущим.
@@ -567,7 +573,7 @@ mod tests {
     #[test]
     fn saved_index_out_of_registry_falls_back_to_first() {
         let mapping = mapping();
-        let mut memory = FakeMemory(Some(5));
+        let mut memory = FakeMemory(Some(REGISTRY.len()));
         let mut garland = Garland::new(REGISTRY, mapping, 0, &mut memory);
         let (mut frame, mut outgoing) = frame_pair();
 

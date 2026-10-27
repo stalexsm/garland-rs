@@ -10,9 +10,11 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 effect-precipitation = { path = "crates/effects/effect-precipitation" }
+effect-pulse = { path = "crates/effects/effect-pulse" }
 effect-rainbow = { path = "crates/effects/effect-rainbow" }
 effect-rings = { path = "crates/effects/effect-rings" }
 effect-solid = { path = "crates/effects/effect-solid" }
+effect-sparkle = { path = "crates/effects/effect-sparkle" }
 garland-core = { path = "crates/garland-core" }
 
 heapless = "0.9.1"

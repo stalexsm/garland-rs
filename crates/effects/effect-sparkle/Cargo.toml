@@ -1,0 +1,10 @@
+[package]
+name = "effect-sparkle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Аддон Гирлянды: мерцание-снежинки"
+publish = false
+
+[dependencies]
+garland-core.workspace = true

@@ -347,6 +347,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "effect-pulse"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
 name = "effect-rainbow"
 version = "0.1.0"
 dependencies = [
@@ -362,6 +369,13 @@ dependencies = [
 
 [[package]]
 name = "effect-solid"
+version = "0.1.0"
+dependencies = [
+ "garland-core",
+]
+
+[[package]]
+name = "effect-sparkle"
 version = "0.1.0"
 dependencies = [
  "garland-core",
@@ -1209,9 +1223,11 @@ name = "fw"
 version = "0.1.0"
 dependencies = [
  "effect-precipitation",
+ "effect-pulse",
  "effect-rainbow",
  "effect-rings",
  "effect-solid",
+ "effect-sparkle",
  "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
